@@ -11,54 +11,78 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Libre+Baskerville:wght@400;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/style.css?v=30" />
+  <link rel="stylesheet" href="css/style.css?v=responsive-mobile" />
 </head>
 
 <body>
   <div class="Application BaselineApp">
     <main class="Workspace" id="Workspace">
 
-      <aside class="SidebarColumn" aria-label="Explore, filters, and selected person">
+      <aside class="SidebarColumn" id="SidebarColumn" aria-label="Explore, filters, and selected person" aria-hidden="false">
+        <div class="SidebarDrawerHeader">
+          <span class="SidebarDrawerTitle">Network tools</span>
+          <button id="SidebarCloseButton" class="SidebarDrawerButton SidebarCloseButton" type="button" aria-label="Close sidebar">×</button>
+        </div>
         <div id="ExplorePanel" class="SidebarView SidebarExploreView">
-        <section class="SidebarSection">
-          <div class="SectionLabel">Explore</div>
-          <div class="SearchWrap">
-            <input id="searchBar" placeholder="Search people…" type="search" autocomplete="off" />
-            <button id="clearButton" type="button" class="SearchClear" title="Clear search">×</button>
+          <div class="NetworkModeTabs" role="tablist" aria-label="Network tools">
+            <button id="ExploreModeButton" class="NetworkModeTab Active" type="button">Explore</button>
+            <button id="ComparisonModeButton" class="NetworkModeTab" type="button">Comparison</button>
           </div>
-          <div id="searchResults" class="SearchResults" hidden></div>
-        </section>
 
-        <section class="SidebarSection">
-          <div class="SectionHeader">
-            <div class="SectionLabel">Relationship</div>
-            <button id="selectAllRelationships" type="button" class="SectionAction">Show all</button>
+          <div id="ExploreControls">
+            <section class="SidebarSection">
+              <div class="SectionLabel">Explore</div>
+              <div class="SearchWrap">
+                <input id="searchBar" placeholder="Search people or alternate names…" type="search" autocomplete="off" />
+                <button id="clearButton" type="button" class="SearchClear" title="Clear search">×</button>
+              </div>
+              <div id="searchResults" class="SearchResults" hidden></div>
+              <label class="PeopleBrowseLabel" for="peopleBrowseSelect">Browse all people</label>
+              <select id="peopleBrowseSelect" class="PeopleBrowseSelect" aria-label="Browse all people">
+                <option value="">Select a person…</option>
+              </select>
+            </section>
+
+            <section class="SidebarSection CompactFilterSection">
+              <div class="SectionHeader">
+                <div class="SectionLabel">Filters</div>
+                <button id="resetFiltersButton" type="button" class="SectionAction">Reset</button>
+              </div>
+              <div id="combinedFilters" class="FilterSelectors"></div>
+
+              <label class="ResearchFilterLabel" for="letterMinimumFilter">Minimum To/From letters</label>
+              <select id="letterMinimumFilter" class="ResearchFilterSelect" aria-label="Minimum To and From letter count"></select>
+            </section>
+
+            <section class="SidebarSection NetworkGuideSection">
+              <div class="SectionLabel">About this view</div>
+              <p class="NetworkGuideText">People are positioned around George Eliot using the Archive’s predefined closeness values. Filters let you compare those curated relationships with gender and To/From correspondence volume. Select a portrait to view its biography and linked correspondence.</p>
+            </section>
           </div>
-          <div id="relationshipFilters" class="RelationshipPills"></div>
-        </section>
 
-        <section class="SidebarSection">
-          <div class="SectionLabel">Gender</div>
-          <div id="genderFilters" class="RelationshipPills"></div>
-        </section>
-<section class="SidebarSection">
-          <div class="SectionLabel">View</div>
-          <div class="ViewButtons">
-            <button id="zoomOutButton" type="button" aria-label="Zoom out">−</button>
-            <button id="resetViewButton" type="button">Reset view</button>
-            <button id="zoomInButton" type="button" aria-label="Zoom in">+</button>
+          <div id="ComparisonControls" hidden>
+            <section class="SidebarSection ComparisonIntroSection">
+              <div class="SectionLabel">Compare people</div>
+              <p class="NetworkGuideText">Tap two person bubbles in the network to compare the Archive’s closeness value with their To/From correspondence activity.</p>
+
+              <div class="ComparisonSlots" aria-live="polite">
+                <div class="ComparisonSlotRow ComparisonSlotRowA">
+                  <span class="ComparisonSlotTag ComparisonSlotTagA">A</span>
+                  <span id="ComparisonASlot" class="ComparisonSlotValue">Tap a bubble for Person A</span>
+                </div>
+                <div class="ComparisonSlotRow ComparisonSlotRowB">
+                  <span class="ComparisonSlotTag ComparisonSlotTagB">B</span>
+                  <span id="ComparisonBSlot" class="ComparisonSlotValue">Tap a second bubble for Person B</span>
+                </div>
+              </div>
+              <button id="ClearComparisonButton" class="ComparisonClearButton" type="button">Clear comparison</button>
+            </section>
+
+            <section class="SidebarSection ComparisonResultSection">
+              <div id="ComparisonMessage" class="ComparisonMessage">Select two people to compare.</div>
+              <div id="ComparisonResults" class="ComparisonResults" hidden></div>
+            </section>
           </div>
-          <label class="FocusToggle">
-            <input id="focusSelectedToggle" type="checkbox" />
-            <span>Focus selected person</span>
-          </label>
-        </section>
-
-        <section class="SidebarSection SidebarLegend">
-          <div class="LegendLabel">Gender key</div>
-          <div id="legendItems" class="LegendItems"></div>
-        </section>
-
         </div>
 
         <section id="PersonPanel" class="PersonDetailsSection SidebarView" hidden>
@@ -89,8 +113,13 @@
         </section>
       </aside>
 
+      <button id="SidebarBackdrop" class="SidebarBackdrop" type="button" aria-label="Close sidebar" tabindex="-1"></button>
+
       <section class="GraphColumn" aria-label="George Eliot relationship network">
         <div class="GraphFrame">
+          <button id="SidebarOpenButton" class="SidebarDrawerButton SidebarOpenButton" type="button" aria-label="Open filters and network tools" aria-expanded="true">
+            <span class="SidebarOpenIcon">☰</span><span class="SidebarOpenText">Tools</span>
+          </button>
           <div id="relationshipWeb"></div>
           <div class="GraphStatus" id="NetworkStatus">Loading network…</div>
         </div>
@@ -99,7 +128,7 @@
     </main>
   </div>
 
-  <script src="js/relationshipsUtils.js?v=30"></script>
-  <script src="js/relationship.js?v=30"></script>
+  <script src="js/relationshipsUtils.js?v=responsive-mobile"></script>
+  <script src="js/relationship.js?v=responsive-mobile"></script>
 </body>
 </html>
