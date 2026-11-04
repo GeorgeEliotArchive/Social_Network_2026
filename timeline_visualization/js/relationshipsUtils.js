@@ -17,10 +17,7 @@ let MAGNIFYING_RATIO = 1;
 let MARGIN = 20;
 let WIDTH = 1300;
 let HEIGHT = 1000;
-let USER_MENU_WIDTH_SHOW = "340px";
-let USER_MENU_WIDTH_HIDE = "120px";
 let IMAGE_R = 80;
-let USER_MENU_SHOWN = true;
 
 // -----------------------
 // Images + names
@@ -315,6 +312,7 @@ function renderRelatedLetterBrowser(data) {
   container.innerHTML = "";
 
   let selectedYear = Number(window.currentTimelineYear);
+  let selectedMonth = window.currentTimelineMonth;
   let selectedRange = window.currentTimelineRange;
   let rangeStart = selectedRange ? Number(selectedRange.start) : null;
   let rangeEnd = selectedRange ? Number(selectedRange.end) : null;
@@ -391,12 +389,17 @@ function renderRelatedLetterBrowser(data) {
   let letters = allLetters.filter(function(letter) {
     if (!Number.isFinite(letter.year)) return false;
     if (hasRange) return letter.year >= rangeStart && letter.year <= rangeEnd;
-    return Number.isFinite(selectedYear) && letter.year === selectedYear;
+    if (Number.isFinite(selectedYear) && letter.year === selectedYear) {
+      if (selectedMonth === null || selectedMonth === undefined || selectedMonth === "") return true;
+      let letterMonth = letter.month || "unknown";
+      return String(letterMonth) === String(selectedMonth);
+    }
+    return false;
   });
 
   let selectionText = hasRange
     ? (rangeStart === rangeEnd ? String(rangeStart) : rangeStart + "–" + rangeEnd)
-    : (Number.isFinite(selectedYear) ? String(selectedYear) : "");
+    : (Number.isFinite(selectedYear) ? ((selectedMonth ? (selectedMonth === "unknown" ? "UNK month " : ["","January","February","March","April","May","June","July","August","September","October","November","December"][Number(selectedMonth)] + " ") : "") + String(selectedYear)) : "");
 
   let yearNote = document.createElement("div");
   yearNote.className = "TimelineLettersYear";
@@ -414,7 +417,7 @@ function renderRelatedLetterBrowser(data) {
   }
 
   let activeType = "All";
-  let relationOrder = ["All", "To", "From", "About"];
+  let relationOrder = ["All", "To", "From"];
 
   let tabs = document.createElement("div");
   tabs.className = "LetterTabs";
@@ -510,8 +513,7 @@ function renderRelatedLetterBrowser(data) {
       correspondentSelect.appendChild(option);
     });
 
-    correspondentSelect.disabled =
-      activeType === "About" || correspondents.length === 0;
+    correspondentSelect.disabled = correspondents.length === 0;
   }
 
   function appendLetterRow(letter, parent) {
@@ -571,7 +573,7 @@ function renderRelatedLetterBrowser(data) {
     }
 
     if (activeType === "All") {
-      ["To", "From", "About"].forEach(function(type) {
+      ["To", "From"].forEach(function(type) {
         let group = filtered.filter(function(letter) {
           return letter.relationType === type;
         });
@@ -627,22 +629,6 @@ d3.selection.prototype.moveToFront = function() {
     this.parentNode.appendChild(this);
   });
 };
-
-function toggleMenu() {
-  if (USER_MENU_SHOWN) {
-    document.getElementById("Toggleable").style.display = "none";
-    document.getElementById("ButtonText").innerHTML = "Show";
-    document.getElementById("ButtonArrow").innerHTML = "›";
-    document.getElementById("UserMenu").style.width = USER_MENU_WIDTH_HIDE;
-  } else {
-    document.getElementById("UserMenu").style.width = USER_MENU_WIDTH_SHOW;
-    document.getElementById("Toggleable").style.display = "block";
-    document.getElementById("ButtonText").innerHTML = "Hide Menu";
-    document.getElementById("ButtonArrow").innerHTML = "‹";
-  }
-
-  USER_MENU_SHOWN = !USER_MENU_SHOWN;
-}
 
 function capitalizeWords(value) {
   return String(value || "")

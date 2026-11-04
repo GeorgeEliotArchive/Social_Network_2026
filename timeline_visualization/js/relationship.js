@@ -1,101 +1,38 @@
 // -----------------------------------------------------------------------------
-// George Eliot correspondence timeline - dynamic annual force layout
-// Single data source:
-//   ../Datasets/UpdatedGeorgeEliotGallery.csv
-//
-// This file drives people, biography, image, gender, relationship,
-// closeness, and To / From / About letter links.
+// George Eliot correspondence matrix + annual bar timeline
+// New visualization prototype. It intentionally lives separately from the
+// existing force-directed correspondence timeline.
+// Single data source: ../Datasets/UpdatedGeorgeEliotGallery.csv
 // -----------------------------------------------------------------------------
 
-let svg = d3
-  .select("#relationshipWeb")
-  .append("svg")
-  .attr("width", WIDTH)
-  .attr("height", HEIGHT)
-  .attr("viewBox", "0 0 " + WIDTH + " " + HEIGHT)
-  .attr("preserveAspectRatio", "xMidYMid meet");
-
-let zoomLayer = svg.append("g").attr("class", "ZoomLayer");
-let backgroundLayer = zoomLayer.append("g").attr("class", "NetworkBackgroundLayer");
-let linkLayer = zoomLayer.append("g").attr("class", "LinkLayer");
-let countLabelLayer = zoomLayer.append("g").attr("class", "CorrespondenceCountLayer");
-let nodeLayer = zoomLayer.append("g").attr("class", "NodeLayer");
-// Always rendered after nodes so hover labels can never be hidden by portraits.
-let labelLayer = zoomLayer.append("g").attr("class", "HoverLabelLayer");
-
-let CENTER_X = WIDTH / 2;
-let CENTER_Y = HEIGHT / 2;
-
-let nodes = [
-  {
-    Radius: 44,
-    RawCloseness: 0,
-    Closeness: 0,
-    index: 0,
-    nodeId: "node_0",
-    ImagePath: "image_0",
-    FullName: "George Eliot",
-    Relationship: "friend",
-    GenderNormalized: "female",
-    HasImage: true,
-    x: CENTER_X,
-    y: CENTER_Y
-  }
-];
-
-let links = [];
 let people = [];
-let images = svg.append("defs").attr("id", "images");
+let galleryLettersByPerson = {};
+let allYears = [];
+let minYear = null;
+let maxYear = null;
+let visibleStartYear = null;
+let visibleEndYear = null;
+let selectedYear = null;
+let drillYear = null;
+let selectedMonth = null;
+let selectedPerson = null;
+let relationshipFilter = "all";
+let genderFilter = "all";
+let hideInactive = false;
+let rowSort = "range-desc";
+let rowHeight = 34;
+let chartMarginLeft = 190;
+let chartMarginRight = 22;
+let headerHeight = 160;
+let barTop = 24;
+let barBottom = 118;
+let redrawTimer = null;
 
-setImage("images/png/georgeeliot.png", 0);
-
-let exactLettersByPerson = {};
-let relationshipValues = [];
-let enabledRelationships = new Set();
-
-let genderValues = ["female", "male"];
-let enabledGenders = new Set(genderValues);
-let networkNodeSelection = null;
-let networkLinkSelection = null;
-let networkCountLabelSelection = null;
-let nodeGroupSelection = null;
-let zoomBehavior = null;
-let focusSelectedEnabled = false;
-
-let timelineSimulation = null;
-let timelineMinYear = null;
-let timelineMaxYear = null;
-let globalMaxAnnualLetterCount = 1;
-let currentTimelineYear = null;
-let currentTimelineStartYear = null;
-let currentTimelineEndYear = null;
-let timelineMode = "single";
 window.currentTimelineYear = null;
 window.currentTimelineRange = null;
 
-// -----------------------------------------------------------------------------
-// Letter adapter
-//
-// Current data flow:
-//
-// selected graph person
-//      ↓
-// ../Datasets/UpdatedGeorgeEliotGallery.csv
-//      ↓
-// Dublin Core:Relation
-//      ↓
-// exact relationship category + archive URL + archive letter title
-//
-// The updated gallery already identifies the specific digital letter, so the
-// visualization no longer has to infer a letter from a page reference.
-// -----------------------------------------------------------------------------
-
-let galleryLettersByPerson = {};
-let letterDataReady = false;
-
 function normalizeLookupName(name) {
   if (!name) return "";
-
   let value = String(name)
     .replace(/\[[^\]]*\]/g, " ")
     .replace(/\([^)]*\)/g, " ")
@@ -104,7 +41,6 @@ function normalizeLookupName(name) {
     .replace(/\s+/g, " ")
     .trim();
 
-  // Convert "Last, First Middle" to "First Middle Last".
   if (value.includes(",")) {
     let commaIndex = value.indexOf(",");
     let last = value.slice(0, commaIndex).trim();
@@ -112,134 +48,143 @@ function normalizeLookupName(name) {
     value = first + " " + last;
   }
 
-  return value
-    .replace(/[“”"]/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
+  return value.replace(/[“”"]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
-function extractReferenceFromTitle(title) {
-  if (!title) return "";
-
-  let matches = String(title).match(/\((\d+\s*:\s*[^)]+)\)\s*$/);
-  if (!matches) return "";
-
-  return matches[1]
-    .replace(/[–—]/g, "-")
-    .replace(/\s*:\s*/g, ":")
-    .replace(/\s*-\s*/g, "-")
+function galleryDisplayName(title) {
+  let value = String(title || "")
+    .replace(/\([^)]*\)\s*$/, "")
+    .replace(/\s+/g, " ")
     .trim();
+  if (value.includes(",")) {
+    let commaIndex = value.indexOf(",");
+    let last = value.slice(0, commaIndex).trim();
+    let first = value.slice(commaIndex + 1).trim();
+    value = first + " " + last;
+  }
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function galleryBirthDeath(title) {
+  let match = String(title || "").match(/\((\d{4})\s*[-–—]\s*(\d{4})\)\s*$/);
+  return match ? { birth: match[1], death: match[2] } : { birth: "", death: "" };
+}
+
+function firstGalleryImage(value) {
+  if (!value) return "";
+  return String(value).split(",").map(function(item) { return item.trim(); }).filter(Boolean)[0] || "";
+}
+
+function normalizeRelationship(value) {
+  return String(value || "").trim().toLowerCase() === "family" ? "family" : "friend";
+}
+
+function normalizeGender(value) {
+  let v = String(value || "").trim().toLowerCase();
+  if (["f", "female", "woman", "women"].indexOf(v) !== -1) return "female";
+  if (["m", "male", "man", "men"].indexOf(v) !== -1) return "male";
+  return "unknown";
 }
 
 function extractItemIdFromUrl(url) {
-  if (!url) return "";
-  let match = String(url).match(/\/items\/show\/(\d+)/);
+  let match = String(url || "").match(/\/items\/show\/(\d+)/);
   return match ? match[1] : "";
 }
 
+function extractReferenceFromTitle(title) {
+  let matches = String(title || "").match(/\((\d+\s*:\s*[^)]+)\)\s*$/);
+  return matches ? matches[1].replace(/[–—]/g, "-").replace(/\s*:\s*/g, ":").trim() : "";
+}
 
-function extractLetterYearFromTitle(title) {
-  if (!title) return null;
-
-  let clean = String(title)
+function extractLetterMonthFromTitle(title) {
+  // Keep brackets/question marks because uncertain dates such as [May?], ?May,
+  // and May? still contain useful month information. Only remove the trailing
+  // archive identifier before normalizing punctuation.
+  let clean = String(title || "")
     .replace(/\s*\(\d+\s*:\s*[^)]+\)\s*$/, "")
+    .toLowerCase()
+    .replace(/[“”"']/g, " ")
+    .replace(/[\[\]{}()?,;:!]/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 
-  // Normalize uncertain/bracketed digits before extracting the year.
-  // Examples:
-  //   187[4]        -> 1874
-  //   187[4?]       -> 1874
-  //   [1864]        -> 1864
-  //   October1864   -> October1864
-  clean = clean.replace(
-    /\[\s*(\d{1,4})\s*\??\s*\]/g,
-    "$1"
-  );
+  let monthPatterns = [
+    { month: 1,  pattern: /(?:^|[^a-z])jan(?:uary)?\.?(?=[^a-z]|$)/i },
+    { month: 2,  pattern: /(?:^|[^a-z])feb(?:ruary)?\.?(?=[^a-z]|$)/i },
+    { month: 3,  pattern: /(?:^|[^a-z])mar(?:ch)?\.?(?=[^a-z]|$)/i },
+    { month: 4,  pattern: /(?:^|[^a-z])apr(?:il)?\.?(?=[^a-z]|$)/i },
+    { month: 5,  pattern: /(?:^|[^a-z])may\.?(?=[^a-z]|$)/i },
+    { month: 6,  pattern: /(?:^|[^a-z])jun(?:e)?\.?(?=[^a-z]|$)/i },
+    { month: 7,  pattern: /(?:^|[^a-z])jul(?:y)?\.?(?=[^a-z]|$)/i },
+    { month: 8,  pattern: /(?:^|[^a-z])aug(?:ust)?\.?(?=[^a-z]|$)/i },
+    { month: 9,  pattern: /(?:^|[^a-z])sept?(?:ember)?\.?(?=[^a-z]|$)/i },
+    { month: 10, pattern: /(?:^|[^a-z])oct(?:ober)?\.?(?=[^a-z]|$)/i },
+    { month: 11, pattern: /(?:^|[^a-z])nov(?:ember)?\.?(?=[^a-z]|$)/i },
+    { month: 12, pattern: /(?:^|[^a-z])dec(?:ember)?\.?(?=[^a-z]|$)/i }
+  ];
 
-  // Accept years even when attached to text or punctuation.
-  // A year cannot be directly preceded/followed by another digit, preventing
-  // accidental extraction from a longer numeric identifier.
+  for (let i = 0; i < monthPatterns.length; i++) {
+    if (monthPatterns[i].pattern.test(clean)) return monthPatterns[i].month;
+  }
+  return null;
+}
+
+function extractLetterYearFromTitle(title) {
+  let clean = String(title || "")
+    .replace(/\s*\(\d+\s*:\s*[^)]+\)\s*$/, "")
+    .replace(/\[\s*(\d{1,4})\s*\??\s*\]/g, "$1")
+    .trim();
   let regex = /(?:^|[^\d])((?:17|18|19)\d{2})(?!\d)/g;
   let matches = [];
   let match;
-
-  while ((match = regex.exec(clean)) !== null) {
-    matches.push(Number(match[1]));
-  }
-
-  if (!matches.length) return null;
-
-  return matches[matches.length - 1];
+  while ((match = regex.exec(clean)) !== null) matches.push(Number(match[1]));
+  return matches.length ? matches[matches.length - 1] : null;
 }
 
 function addDirectGalleryLetter(personName, letter) {
   let key = normalizeLookupName(personName);
   if (!key || !letter || !letter.url || !letter.title) return;
-
-  if (!galleryLettersByPerson[key]) {
-    galleryLettersByPerson[key] = [];
-  }
+  if (!galleryLettersByPerson[key]) galleryLettersByPerson[key] = [];
 
   let duplicate = galleryLettersByPerson[key].some(function(existing) {
-    return existing.url === letter.url &&
-      existing.relationType === letter.relationType;
+    return existing.url === letter.url && existing.relationType === letter.relationType;
   });
-
-  if (!duplicate) {
-    galleryLettersByPerson[key].push(letter);
-  }
+  if (!duplicate) galleryLettersByPerson[key].push(letter);
 }
 
 function parseUpdatedRelation(personName, relationHtml) {
   if (!relationHtml) return;
-
   let container = document.createElement("div");
   container.innerHTML = relationHtml;
-
   let relationType = "";
 
   Array.from(container.children).forEach(function(element) {
     let tag = element.tagName ? element.tagName.toLowerCase() : "";
-
     if (tag === "strong") {
       let heading = element.textContent.trim().replace(/:$/, "");
-      if (heading === "To" || heading === "From" || heading === "About") {
-        relationType = heading;
-      }
+      // Non-correspondence relation sections remain in the CSV but are not ingested by this visualization.
+      relationType = (heading === "To" || heading === "From") ? heading : "";
       return;
     }
-
     if (tag !== "a" || !relationType) return;
 
     let url = element.getAttribute("href") || "";
     let title = element.textContent.trim();
-    let displayTitle = title
-      .replace(/\s*\(\d+\s*:\s*[^)]+\)\s*$/, "")
-      .trim();
-
     addDirectGalleryLetter(personName, {
       relationType: relationType,
       title: title,
-      displayTitle: displayTitle,
+      displayTitle: title.replace(/\s*\(\d+\s*:\s*[^)]+\)\s*$/, "").trim(),
       url: url,
       itemId: extractItemIdFromUrl(url),
       identifier: extractReferenceFromTitle(title),
-      year: extractLetterYearFromTitle(title)
+      year: extractLetterYearFromTitle(title),
+      month: extractLetterMonthFromTitle(title)
     });
   });
 }
 
 function personLookupCandidates(data) {
-  return [
-    data["FullName"],
-    [data["First Name"], data["Second Names"], data["Last Name"]]
-      .filter(Boolean)
-      .join(" "),
-    [data["First Name"], data["Last Name"]]
-      .filter(Boolean)
-      .join(" ")
-  ]
+  return [data.FullName, data.RawTitle]
     .map(normalizeLookupName)
     .filter(Boolean);
 }
@@ -247,1779 +192,773 @@ function personLookupCandidates(data) {
 function getLettersForNode(data) {
   let results = [];
   let seen = {};
-
   personLookupCandidates(data).forEach(function(name) {
     (galleryLettersByPerson[name] || []).forEach(function(letter) {
       let key = [letter.relationType, letter.url].join("|");
       if (seen[key]) return;
-
       seen[key] = true;
       results.push(letter);
     });
   });
-
   return results;
 }
 
-// Kept for compatibility with the existing details renderer.
-function getExactLettersForNode(data) {
-  return getLettersForNode(data);
-}
-
-let letterDataPromise = d3.csv("../Datasets/UpdatedGeorgeEliotGallery.csv")
-  .then(function(galleryRows) {
-    galleryRows.forEach(function(row) {
-      parseUpdatedRelation(
-        row["Dublin Core:Title"],
-        row["Dublin Core:Relation"]
-      );
-    });
-
-    letterDataReady = true;
-
-    let totalLetters = Object.keys(galleryLettersByPerson).reduce(
-      function(total, personKey) {
-        return total + galleryLettersByPerson[personKey].length;
-      },
-      0
-    );
-
-    console.log(
-      "Loaded updated gallery relations:",
-      Object.keys(galleryLettersByPerson).length,
-      "people with direct letter relations;",
-      totalLetters,
-      "direct letter links."
-    );
-
-    return galleryRows;
-  })
-  .catch(function(error) {
-    console.error(
-      "Could not load ../Datasets/UpdatedGeorgeEliotGallery.csv:",
-      error
-    );
-  });
-
-
-function normalizeRelationship(value) {
-  return String(value || "").trim().toLowerCase() === "family"
-    ? "family"
-    : "friend";
-}
-
-function normalizeGender(node) {
-  let raw =
-    node["Gender"] ||
-    node["gender"] ||
-    node["Sex"] ||
-    node["sex"] ||
-    node["Gender Identity"] ||
-    "";
-
-  let value = String(raw).trim().toLowerCase();
-
-  if (
-    value === "f" ||
-    value === "female" ||
-    value === "woman" ||
-    value === "women"
-  ) {
-    return "female";
-  }
-
-  if (
-    value === "m" ||
-    value === "male" ||
-    value === "man" ||
-    value === "men"
-  ) {
-    return "male";
-  }
-
-  return "unknown";
-}
-
-function genderColor(value) {
-  let gender = String(value || "").toLowerCase();
-  if (gender === "female") return "#c46f95";
-  if (gender === "male") return "#5f87b8";
-  return "#8c8378";
-}
-
-
-// Closeness is still used internally to place people on the three rings.
-// The user-facing closeness FILTER was removed; this function is only layout logic.
-function closenessBucket(node) {
-  let value = Number(node.RawCloseness);
-
-  if (!Number.isFinite(value)) {
-    return "distant";
-  }
-
-  if (value <= 5) {
-    return "close";
-  }
-
-  if (value <= 10) {
-    return "medium";
-  }
-
-  return "distant";
-}
-
-
-function galleryDisplayName(title) {
-  let value = String(title || "")
-    .replace(/\([^)]*\)\s*$/, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (value.includes(",")) {
-    let commaIndex = value.indexOf(",");
-    let last = value.slice(0, commaIndex).trim();
-    let first = value.slice(commaIndex + 1).trim();
-    value = first + " " + last;
-  }
-
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function galleryBirthDeath(title) {
-  let value = String(title || "");
-  let match = value.match(/\((\d{4})\s*[-–—]\s*(\d{4})\)\s*$/);
-
-  if (!match) {
-    return { birth: "", death: "" };
-  }
-
-  return {
-    birth: match[1],
-    death: match[2]
-  };
-}
-
-function firstGalleryImage(value) {
-  if (!value) return "";
-
-  return String(value)
-    .split(",")
-    .map(function(item) { return item.trim(); })
-    .filter(Boolean)[0] || "";
-}
-
-// -----------------------------------------------------------------------------
-// People data
-// -----------------------------------------------------------------------------
-
-let parseData = d3.csv("../Datasets/UpdatedGeorgeEliotGallery.csv", function(row) {
-  if (!row) return;
-
-  let node = Object.assign({}, row);
-
-  node = setIndex(node);
-  node["nodeId"] = "node_" + node["index"];
-  node["FullName"] = galleryDisplayName(row["Dublin Core:Title"]);
-
-  let dates = galleryBirthDeath(row["Dublin Core:Title"]);
-  node["Birth"] = dates.birth;
-  node["Death"] = dates.death;
-
-  node["Biography"] = row["Dublin Core:Description"] || "";
-  node["Image"] = firstGalleryImage(row["file"]);
-
-  // This visualization intentionally ignores the manually assigned closeness
-  // for positioning. Every person bubble is the same size; annual To/From
-  // letter count controls only distance from George Eliot.
-  node.RawCloseness = 0;
-  node.Closeness = 0;
-  node.Radius = 18;
-  node.YearCounts = {};
-  node.AnnualLetterCount = 0;
-
-  node.Relationship = normalizeRelationship(row["Relationship"]);
-
-  // Use only gender explicitly stored in Dublin Core:Type.
-  node.GenderNormalized = normalizeGender({
-    Gender: row["Dublin Core:Type"]
-  });
-
-  let person = {
-    name: node["FullName"],
-    id: node["nodeId"],
-    data: node
-  };
-  people.push(person);
-
-  node.mainColor = genderColor(node.GenderNormalized);
-  node.secondaryColor = "#f3ece3";
-
-  node.HasImage = Boolean(node.Image);
-  if (node.HasImage) {
-    setImage(node.Image, node.index);
-    node.ImagePath = "image_" + node.index;
-  } else {
-    node.ImagePath = null;
-  }
-
-  nodes.push(node);
-  links.push({ source: 0, target: node.index });
-});
-
-Promise.all([parseData, letterDataPromise]).then(function() {
-  people.sort(function(a, b) {
-    return a.name.localeCompare(b.name);
-  });
-
-  initializeCorrespondenceTimeline();
-
-  populateSearchList();
-  buildRelationshipFilters();
-  buildGenderFilters();
-  drawNetwork();
-  bindControls();
-  bindTimelineControls();
-
-  updateTimelineYear(currentTimelineYear, false);
-});
-
-// -----------------------------------------------------------------------------
-// Network background
-// -----------------------------------------------------------------------------
-
-function drawZoomBackground() {
-  backgroundLayer.selectAll("*").remove();
-
-  let dots = [];
-  for (let i = 0; i < 52; i++) {
-    let angle = i * 2.399963229728653;
-    let radius = 90 + ((i * 67) % 420);
-    dots.push({
-      x: CENTER_X + Math.cos(angle) * radius,
-      y: CENTER_Y + Math.sin(angle) * radius,
-      r: 0.8 + (i % 3) * 0.22
-    });
-  }
-
-  backgroundLayer
-    .selectAll("circle.BackgroundDot")
-    .data(dots)
-    .enter()
-    .append("circle")
-    .attr("class", "BackgroundDot")
-    .attr("cx", function(d) { return d.x; })
-    .attr("cy", function(d) { return d.y; })
-    .attr("r", function(d) { return d.r; });
-
-  backgroundLayer
-    .append("circle")
-    .attr("class", "CenterHalo TimelineCenterHalo")
-    .attr("cx", CENTER_X)
-    .attr("cy", CENTER_Y)
-    .attr("r", 76);
-
-  backgroundLayer
-    .append("circle")
-    .attr("class", "ZeroLetterBoundary")
-    .attr("cx", CENTER_X)
-    .attr("cy", CENTER_Y)
-    .attr("r", 405);
-
-  backgroundLayer
-    .append("text")
-    .attr("class", "ZeroLetterBoundaryLabel")
-    .attr("x", CENTER_X)
-    .attr("y", CENTER_Y - 414)
-    .attr("text-anchor", "middle")
-    .text("0 letters outside");
-
-  backgroundLayer
-    .append("text")
-    .attr("class", "CenterLabel")
-    .attr("x", CENTER_X)
-    .attr("y", CENTER_Y + 92)
-    .attr("text-anchor", "middle")
-    .text("George Eliot");
-}
-
-// -----------------------------------------------------------------------------
-// Annual correspondence layout
-// -----------------------------------------------------------------------------
-
-function initializeCorrespondenceTimeline() {
-  let validYears = [];
-  globalMaxAnnualLetterCount = 1;
-
-  nodes.slice(1).forEach(function(node) {
-    node.YearCounts = {};
-
-    getLettersForNode(node).forEach(function(letter) {
-      if (letter.relationType !== "To" && letter.relationType !== "From") {
-        return;
-      }
-
-      if (
-        letter.year === null ||
-        letter.year === undefined ||
-        letter.year === ""
-      ) {
-        return;
-      }
-
-      let year = Number(letter.year);
-      if (!Number.isFinite(year) || year < 1700) return;
-
-      node.YearCounts[year] = (node.YearCounts[year] || 0) + 1;
-      validYears.push(year);
-    });
-  });
-
-  let firstYear = validYears.length
-    ? Math.min.apply(null, validYears)
-    : 1836;
-
-  // Keep the introductory empty year from the latest timeline version.
-  timelineMinYear = firstYear - 1;
-  timelineMaxYear = validYears.length
-    ? Math.max.apply(null, validYears)
-    : firstYear;
-
-  currentTimelineYear = timelineMinYear;
-  currentTimelineStartYear = timelineMinYear;
-  currentTimelineEndYear = Math.min(timelineMinYear + 5, timelineMaxYear);
-  timelineMode = "single";
-
-  window.currentTimelineYear = currentTimelineYear;
-  window.currentTimelineRange = null;
-
-  let slider = document.getElementById("yearSlider");
-  if (slider) {
-    slider.min = String(timelineMinYear);
-    slider.max = String(timelineMaxYear);
-    slider.value = String(currentTimelineYear);
-  }
-
-  ["rangeStartSlider", "rangeEndSlider"].forEach(function(id) {
-    let control = document.getElementById(id);
-    if (!control) return;
-    control.min = String(timelineMinYear);
-    control.max = String(timelineMaxYear);
-  });
-
-  let rangeStart = document.getElementById("rangeStartSlider");
-  let rangeEnd = document.getElementById("rangeEndSlider");
-  if (rangeStart) rangeStart.value = String(currentTimelineStartYear);
-  if (rangeEnd) rangeEnd.value = String(currentTimelineEndYear);
-
-  document.getElementById("TimelineMinYear").textContent = timelineMinYear;
-  document.getElementById("TimelineMaxYear").textContent = timelineMaxYear;
-  updateSliderValueLabels();
-}
-
-function targetDistanceForCount(count) {
-  if (!count) return 470;
-
-  let normalized =
-    Math.log(1 + count) /
-    Math.log(1 + Math.max(1, globalMaxAnnualLetterCount));
-
-  return 365 - normalized * 260;
-}
-
-function seedTimelinePositions() {
-  nodes[0].x = CENTER_X;
-  nodes[0].y = CENTER_Y;
-  nodes[0].fx = CENTER_X;
-  nodes[0].fy = CENTER_Y;
-
-  nodes.slice(1).forEach(function(node, i) {
-    let angle = i * 2.399963229728653;
-    let radius = 360 + (i % 4) * 20;
-
-    node.x = CENTER_X + Math.cos(angle) * radius;
-    node.y = CENTER_Y + Math.sin(angle) * radius;
+function getCorrespondenceLetters(data) {
+  return getLettersForNode(data).filter(function(letter) {
+    return (letter.relationType === "To" || letter.relationType === "From") && letter.year !== null && letter.year !== undefined && Number.isFinite(Number(letter.year)) && Number(letter.year) >= 1700;
   });
 }
 
-function rebuildTimelineForces(alpha) {
-  if (!timelineSimulation) return;
-
-  timelineSimulation
-    .force(
-      "radial",
-      d3.forceRadial(
-        function(d) {
-          if (d.index === 0) return 0;
-          return targetDistanceForCount(d.AnnualLetterCount);
-        },
-        CENTER_X,
-        CENTER_Y
-      ).strength(function(d) {
-        return d.index === 0 ? 1 : 0.42;
-      })
-    )
-    .force(
-      "collision",
-      d3.forceCollide()
-        .radius(function(d) {
-          if (d.index === 0) return d.Radius + 18;
-          let extra = window.selectedPersonIndex === d.index ? 15 : 7;
-          return nodePassesFilters(d) ? d.Radius + extra : 0;
-        })
-        .strength(0.72)
-        .iterations(1)
-    )
-    .force(
-      "charge",
-      d3.forceManyBody().strength(function(d) {
-        if (d.index === 0) return -120;
-        return nodePassesFilters(d) ? -12 : 0;
-      })
-    );
-
-  timelineSimulation.alpha(alpha || 0.6).restart();
-}
-
-function startTimelineSimulation() {
-  seedTimelinePositions();
-
-  timelineSimulation = d3
-    .forceSimulation(nodes)
-    .velocityDecay(0.68)
-    .alphaDecay(0.075)
-    .alphaMin(0.012)
-    .on("tick", updateNetworkGeometry);
-
-  rebuildTimelineForces(1);
-}
-
-function countLettersForSelection(node) {
-  if (timelineMode === "range") {
-    let total = 0;
-    for (let year = currentTimelineStartYear; year <= currentTimelineEndYear; year++) {
-      total += Number(node.YearCounts[year] || 0);
+function aliasSearchText(row, fullName) {
+  let terms = [fullName, row["Dublin Core:Title"] || ""];
+  Object.keys(row).forEach(function(key) {
+    if (/alias|alternate|alternative|nickname|maiden|married|former|other name/i.test(key)) {
+      terms.push(row[key] || "");
     }
-    return total;
-  }
-
-  return Number(node.YearCounts[currentTimelineYear] || 0);
+  });
+  return terms.join(" ").toLowerCase();
 }
 
-function timelineSelectionLabel() {
-  if (timelineMode === "range") {
-    return currentTimelineStartYear === currentTimelineEndYear
-      ? String(currentTimelineStartYear)
-      : currentTimelineStartYear + "–" + currentTimelineEndYear;
-  }
-  return String(currentTimelineYear);
+Promise.all([
+  d3.csv("../Datasets/UpdatedGeorgeEliotGallery.csv"),
+  d3.csv("../Datasets/UpdatedGeorgeEliotGallery.csv")
+]).then(function(results) {
+  let rows = results[0];
+  let relationRows = results[1];
+
+  relationRows.forEach(function(row) {
+    parseUpdatedRelation(row["Dublin Core:Title"], row["Dublin Core:Relation"]);
+  });
+
+  people = rows.map(function(row, index) {
+    let fullName = galleryDisplayName(row["Dublin Core:Title"]);
+    let dates = galleryBirthDeath(row["Dublin Core:Title"]);
+    return {
+      index: index + 1,
+      FullName: fullName,
+      RawTitle: row["Dublin Core:Title"],
+      Birth: dates.birth,
+      Death: dates.death,
+      Biography: row["Dublin Core:Description"] || "",
+      Image: firstGalleryImage(row["file"]),
+      Relationship: normalizeRelationship(row["Relationship"]),
+      GenderNormalized: normalizeGender(row["Dublin Core:Type"]),
+      SearchText: aliasSearchText(row, fullName),
+      YearCounts: {},
+      MonthCounts: {},
+      TotalDatedLetters: 0
+    };
+  });
+
+  let yearSet = {};
+  people.forEach(function(person) {
+    getCorrespondenceLetters(person).forEach(function(letter) {
+      let year = Number(letter.year);
+      person.YearCounts[year] = (person.YearCounts[year] || 0) + 1;
+      if (!person.MonthCounts[year]) person.MonthCounts[year] = {};
+      let monthKey = letter.month || "unknown";
+      person.MonthCounts[year][monthKey] = (person.MonthCounts[year][monthKey] || 0) + 1;
+      person.TotalDatedLetters += 1;
+      yearSet[year] = true;
+    });
+  });
+
+  allYears = Object.keys(yearSet).map(Number).sort(function(a,b) { return a-b; });
+  minYear = allYears.length ? allYears[0] : 1836;
+  maxYear = allYears.length ? allYears[allYears.length - 1] : minYear;
+  visibleStartYear = minYear;
+  visibleEndYear = maxYear;
+
+  initializeControls();
+  buildPeopleBrowseSelect();
+  redraw();
+}).catch(function(error) {
+  console.error(error);
+  document.getElementById("MatrixSummary").textContent = "Could not load the correspondence dataset.";
+});
+
+function yearsInWindow() {
+  let years = [];
+  for (let year = visibleStartYear; year <= visibleEndYear; year++) years.push(year);
+  return years;
 }
 
-function shouldShowCorrespondenceLines() {
-  // Correspondence lines are useful in both single-year and range views.
+function personRangeCount(person) {
+  let total = 0;
+  for (let y = visibleStartYear; y <= visibleEndYear; y++) total += Number(person.YearCounts[y] || 0);
+  return total;
+}
+
+function personPassesCategoryFilters(person) {
+  if (relationshipFilter !== "all" && person.Relationship !== relationshipFilter) return false;
+  if (genderFilter !== "all" && person.GenderNormalized !== genderFilter) return false;
+  let term = document.getElementById("searchBar").value.trim().toLowerCase();
+  if (term && !person.SearchText.includes(term)) return false;
+  if (hideInactive && personRangeCount(person) === 0) return false;
   return true;
 }
 
-function correspondenceLineWidth(count) {
-  count = Math.max(0, Number(count) || 0);
-  if (!count) return 0;
 
-  // Increase thickness gently with correspondence volume without allowing
-  // high-count relationships to dominate the network.
-  let maxCount = Math.max(1, Number(globalMaxAnnualLetterCount) || 1);
-  let normalized = Math.log(1 + count) / Math.log(1 + maxCount);
-  return 1.1 + normalized * 2.7;
+function personCorrespondenceYears(person) {
+  return Object.keys(person.YearCounts || {})
+    .map(Number)
+    .filter(function(year) { return Number.isFinite(year) && Number(person.YearCounts[year] || 0) > 0; })
+    .sort(function(a,b) { return a-b; });
 }
 
-function refreshTimelineSummary() {
-  let visibleNodes = nodes.slice(1).filter(nodePassesFilters);
-  let totalLetters = 0;
-  let activePeople = 0;
+function firstCorrespondenceYear(person) {
+  let years = personCorrespondenceYears(person);
+  return years.length ? years[0] : Infinity;
+}
 
-  visibleNodes.forEach(function(node) {
-    totalLetters += Number(node.AnnualLetterCount || 0);
-    if (node.AnnualLetterCount > 0) activePeople += 1;
+function lastCorrespondenceYear(person) {
+  let years = personCorrespondenceYears(person);
+  return years.length ? years[years.length - 1] : -Infinity;
+}
+
+
+function populationPeople() {
+  let term = document.getElementById("searchBar").value.trim().toLowerCase();
+  return people.filter(function(person) {
+    if (relationshipFilter !== "all" && person.Relationship !== relationshipFilter) return false;
+    if (genderFilter !== "all" && person.GenderNormalized !== genderFilter) return false;
+    if (term && !person.SearchText.includes(term)) return false;
+    return true;
+  });
+}
+
+function fitRangeToCurrentPopulation() {
+  let rows = populationPeople();
+  let years = [];
+  rows.forEach(function(person) {
+    personCorrespondenceYears(person).forEach(function(year) { years.push(year); });
   });
 
-  let label = timelineSelectionLabel();
-  let yearHeading = document.getElementById("TimelineYear");
-  if (yearHeading) yearHeading.textContent = label;
-
-  let summary = document.getElementById("TimelineSummary");
-  if (summary) {
-    summary.textContent =
-      totalLetters +
-      (totalLetters === 1 ? " exchanged letter" : " exchanged letters") +
-      " across " +
-      activePeople +
-      (activePeople === 1 ? " correspondent" : " correspondents") +
-      " · " +
-      visibleNodes.length +
-      (visibleNodes.length === 1 ? " person visible" : " people visible");
+  if (!years.length) {
+    visibleStartYear = minYear;
+    visibleEndYear = maxYear;
+  } else {
+    visibleStartYear = Math.min.apply(null, years);
+    visibleEndYear = Math.max.apply(null, years);
   }
 
-  let status = document.getElementById("NetworkStatus");
-  if (status) {
-    status.textContent =
-      label +
-      " · " +
-      activePeople +
-      (activePeople === 1 ? " active correspondent" : " active correspondents") +
-      " · " +
-      visibleNodes.length +
-      " visible";
+  drillYear = null;
+  selectedMonth = null;
+  selectedYear = null;
+  window.currentTimelineMonth = null;
+  syncRangeControls();
+}
+
+function visiblePeople() {
+  let result = people.filter(personPassesCategoryFilters);
+  if (rowSort === "range-desc") {
+    result.sort(function(a,b) {
+      return personRangeCount(b) - personRangeCount(a) || a.FullName.localeCompare(b.FullName);
+    });
+  } else if (rowSort === "first") {
+    result.sort(function(a,b) {
+      let ay = firstCorrespondenceYear(a);
+      let by = firstCorrespondenceYear(b);
+      return ay - by || a.FullName.localeCompare(b.FullName);
+    });
+  } else if (rowSort === "recent") {
+    result.sort(function(a,b) {
+      let ay = lastCorrespondenceYear(a);
+      let by = lastCorrespondenceYear(b);
+      return by - ay || a.FullName.localeCompare(b.FullName);
+    });
+  } else {
+    result.sort(function(a,b) { return a.FullName.localeCompare(b.FullName); });
   }
+  return result;
 }
 
-function positionSliderLabel(slider, label) {
-  if (!slider || !label) return;
-  let min = Number(slider.min);
-  let max = Number(slider.max);
-  let value = Number(slider.value);
-  let percent = max === min ? 0 : ((value - min) / (max - min)) * 100;
-  label.style.left = percent + "%";
-  label.textContent = String(value);
+function annualUniqueCounts(rows) {
+  let result = {};
+  let included = {};
+  rows.forEach(function(person) { included[person.index] = true; });
+
+  rows.forEach(function(person) {
+    getCorrespondenceLetters(person).forEach(function(letter) {
+      let year = Number(letter.year);
+      if (year < visibleStartYear || year > visibleEndYear) return;
+      if (!result[year]) result[year] = {};
+      let key = letter.url || [person.index, letter.relationType, letter.title].join("|");
+      result[year][key] = true;
+    });
+  });
+
+  let counts = {};
+  Object.keys(result).forEach(function(year) { counts[year] = Object.keys(result[year]).length; });
+  return counts;
 }
 
-function updateSliderValueLabels() {
-  positionSliderLabel(
-    document.getElementById("yearSlider"),
-    document.getElementById("yearSliderValue")
-  );
+function initializeControls() {
+  buildSegments("relationshipFilters", [
+    { value: "all", label: "All" }, { value: "family", label: "Family" }, { value: "friend", label: "Friend" }
+  ], function(value) { relationshipFilter = value; fitRangeToCurrentPopulation(); redraw(); });
 
-  let startSlider = document.getElementById("rangeStartSlider");
-  let endSlider = document.getElementById("rangeEndSlider");
+  buildSegments("genderFilters", [
+    { value: "all", label: "All" }, { value: "female", label: "Female" }, { value: "male", label: "Male" }
+  ], function(value) { genderFilter = value; fitRangeToCurrentPopulation(); redraw(); });
 
-  positionSliderLabel(startSlider, document.getElementById("rangeStartValue"));
-  positionSliderLabel(endSlider, document.getElementById("rangeEndValue"));
+  let resetFilters = document.getElementById("resetFiltersButton");
+  if (resetFilters) resetFilters.addEventListener("click", function() {
+    relationshipFilter = "all"; genderFilter = "all";
+    document.querySelectorAll("#relationshipFilters .FilterSegment, #genderFilters .FilterSegment").forEach(function(b) {
+      b.classList.toggle("Active", b.dataset.value === "all");
+    });
+    fitRangeToCurrentPopulation();
+    redraw();
+  });
 
-  // The range fill represents only the selected interval, not the portion
-  // from the timeline minimum to the second handle.
+  let start = document.getElementById("rangeStartSlider");
+  let end = document.getElementById("rangeEndSlider");
+  [start, end].forEach(function(slider) { slider.min = minYear; slider.max = maxYear; });
+  start.value = minYear;
+  end.value = maxYear;
+  let sortSelect = document.getElementById("sortRowsSelect");
+  if (sortSelect) sortSelect.value = rowSort;
+  syncRangeControls();
+
+  start.addEventListener("input", function() {
+    visibleStartYear = Math.min(Number(start.value), visibleEndYear);
+    start.value = visibleStartYear;
+    redraw();
+  });
+  end.addEventListener("input", function() {
+    visibleEndYear = Math.max(Number(end.value), visibleStartYear);
+    end.value = visibleEndYear;
+    redraw();
+  });
+
+  document.getElementById("sortRowsSelect").addEventListener("change", function(e) { rowSort = e.target.value; redraw(); });
+  document.getElementById("hideInactiveToggle").addEventListener("change", function(e) { hideInactive = e.target.checked; redraw(); });
+  document.getElementById("searchBar").addEventListener("input", function() { renderSearchResults(); fitRangeToCurrentPopulation(); redraw(); });
+  document.getElementById("clearButton").addEventListener("click", function() {
+    document.getElementById("searchBar").value = "";
+    document.getElementById("searchResults").hidden = true;
+    let browse = document.getElementById("peopleBrowseSelect");
+    if (browse) browse.value = "";
+    fitRangeToCurrentPopulation();
+    redraw();
+  });
+
+  let peopleBrowseSelect = document.getElementById("peopleBrowseSelect");
+  if (peopleBrowseSelect) {
+    peopleBrowseSelect.addEventListener("change", function() {
+      let selectedIndex = Number(peopleBrowseSelect.value);
+      if (!Number.isFinite(selectedIndex) || peopleBrowseSelect.value === "") return;
+      let person = people.find(function(item) { return item.index === selectedIndex; });
+      if (!person) return;
+      document.getElementById("searchBar").value = person.FullName;
+      document.getElementById("searchResults").hidden = true;
+      fitRangeToCurrentPopulation();
+      redraw();
+    });
+  }
+
+  document.getElementById("zoomInButton").addEventListener("click", function() { zoomRange(0.68); });
+  document.getElementById("zoomOutButton").addEventListener("click", function() { zoomRange(1.45); });
+  document.getElementById("resetRangeButton").addEventListener("click", function() {
+    visibleStartYear = minYear; visibleEndYear = maxYear; drillYear = null; selectedMonth = null; syncRangeControls(); redraw();
+  });
+  let backYears = document.getElementById("backToYearsButton");
+  if (backYears) backYears.addEventListener("click", function() { drillYear = null; selectedMonth = null; selectedYear = null; window.currentTimelineMonth = null; redraw(); });
+
+  document.getElementById("BackToMatrixButton").addEventListener("click", showExplorePanel);
+  document.getElementById("closeSidebarButton").addEventListener("click", closeSidebar);
+  document.getElementById("openSidebarButton").addEventListener("click", openSidebar);
+  document.getElementById("sidebarBackdrop").addEventListener("click", closeSidebar);
+  syncSidebarForViewport();
+  window.addEventListener("resize", function() {
+    syncSidebarForViewport();
+    clearTimeout(redrawTimer);
+    redrawTimer = setTimeout(redraw, 100);
+  });
+}
+
+function buildSegments(containerId, values, onChange) {
+  let container = document.getElementById(containerId);
+  values.forEach(function(entry, i) {
+    let button = document.createElement("button");
+    button.type = "button";
+    let extraClass = entry.value === "family" ? " FilterFamily" : entry.value === "friend" ? " FilterFriend" : entry.value === "female" ? " FilterFemale" : entry.value === "male" ? " FilterMale" : "";
+    button.className = "FilterSegment" + extraClass + (i === 0 ? " Active" : "");
+    button.dataset.value = entry.value;
+    button.textContent = entry.label;
+    button.addEventListener("click", function() {
+      Array.from(container.querySelectorAll(".FilterSegment")).forEach(function(b) { b.classList.remove("Active"); });
+      button.classList.add("Active");
+      onChange(entry.value);
+    });
+    container.appendChild(button);
+  });
+}
+
+function syncRangeControls() {
+  let start = document.getElementById("rangeStartSlider");
+  let end = document.getElementById("rangeEndSlider");
+  if (!start || !end) return;
+
+  start.value = visibleStartYear;
+  end.value = visibleEndYear;
+
+  let span = Math.max(1, maxYear - minYear);
+  let startPercent = ((visibleStartYear - minYear) / span) * 100;
+  let endPercent = ((visibleEndYear - minYear) / span) * 100;
   let fill = document.getElementById("rangeTrackFill");
-  if (fill && startSlider && endSlider) {
-    let min = Number(startSlider.min);
-    let max = Number(startSlider.max);
-    let start = Number(startSlider.value);
-    let end = Number(endSlider.value);
-    let span = Math.max(1, max - min);
-    let startPercent = ((start - min) / span) * 100;
-    let endPercent = ((end - min) / span) * 100;
-
+  if (fill) {
     fill.style.left = startPercent + "%";
     fill.style.width = Math.max(0, endPercent - startPercent) + "%";
   }
-}
 
-function refreshTimelineSelection(animate) {
-  globalMaxAnnualLetterCount = 1;
-
-  nodes.slice(1).forEach(function(node) {
-    node.AnnualLetterCount = countLettersForSelection(node);
-    globalMaxAnnualLetterCount = Math.max(
-      globalMaxAnnualLetterCount,
-      node.AnnualLetterCount
-    );
-  });
-
-  if (nodeGroupSelection) {
-    nodeGroupSelection.classed("NoCorrespondencePerson", function(d) {
-      return d.index !== 0 && d.AnnualLetterCount === 0;
-    });
+  let startBubble = document.getElementById("rangeStartBubble");
+  let endBubble = document.getElementById("rangeEndBubble");
+  if (startBubble) {
+    startBubble.textContent = visibleStartYear;
+    startBubble.style.left = startPercent + "%";
+  }
+  if (endBubble) {
+    endBubble.textContent = visibleEndYear;
+    endBubble.style.left = endPercent + "%";
   }
 
-  if (networkNodeSelection) {
-    networkNodeSelection.classed("NoCorrespondence", function(d) {
-      return d.index !== 0 && d.AnnualLetterCount === 0;
-    });
-  }
-
-  if (networkCountLabelSelection) {
-    networkCountLabelSelection
-      .select("text")
-      .text(function(link) {
-        let node = getLinkTargetNode(link);
-        return node ? node.AnnualLetterCount : "";
-      });
-  }
-
-  refreshTimelineSummary();
-  updateSliderValueLabels();
-
-  if (timelineSimulation) {
-    nodes.forEach(function(node) {
-      if (node.index === 0) return;
-      node.vx *= 0.18;
-      node.vy *= 0.18;
-    });
-
-    rebuildTimelineForces(animate === false ? 0.20 : 0.32);
-  }
-
-  if (
-    window.selectedPersonIndex !== null &&
-    window.selectedPersonIndex !== undefined
-  ) {
-    let selected = nodes[window.selectedPersonIndex];
-    if (selected && selected.index !== 0) {
-      renderRelatedLetterBrowser(selected);
-    }
-  }
-}
-
-function updateTimelineYear(year, animate) {
-  year = Number(year);
-  if (!Number.isFinite(year)) return;
-
-  timelineMode = "single";
-  currentTimelineYear = Math.max(
-    timelineMinYear,
-    Math.min(timelineMaxYear, year)
-  );
-  window.currentTimelineYear = currentTimelineYear;
-  window.currentTimelineRange = null;
-
-  let slider = document.getElementById("yearSlider");
-  if (slider) slider.value = String(currentTimelineYear);
-
-  refreshTimelineSelection(animate);
-  syncTimelineModeControls();
-}
-
-function updateTimelineRange(startYear, endYear, animate, changedHandle) {
-  startYear = Number(startYear);
-  endYear = Number(endYear);
-  if (!Number.isFinite(startYear) || !Number.isFinite(endYear)) return;
-
-  startYear = Math.max(timelineMinYear, Math.min(timelineMaxYear, startYear));
-  endYear = Math.max(timelineMinYear, Math.min(timelineMaxYear, endYear));
-
-  if (startYear > endYear) {
-    if (changedHandle === "start") {
-      endYear = startYear;
+  // Keep the year labels readable when the two handles get close together.
+  let handleGap = endPercent - startPercent;
+  if (startBubble && endBubble) {
+    if (handleGap < 10) {
+      startBubble.style.transform = "translateX(-105%)";
+      endBubble.style.transform = "translateX(5%)";
     } else {
-      startYear = endYear;
+      startBubble.style.transform = "translateX(-50%)";
+      endBubble.style.transform = "translateX(-50%)";
     }
   }
-
-  currentTimelineStartYear = startYear;
-  currentTimelineEndYear = endYear;
-  timelineMode = "range";
-
-  window.currentTimelineRange = {
-    start: currentTimelineStartYear,
-    end: currentTimelineEndYear
-  };
-  window.currentTimelineYear = null;
-
-  let startSlider = document.getElementById("rangeStartSlider");
-  let endSlider = document.getElementById("rangeEndSlider");
-  if (startSlider) startSlider.value = String(currentTimelineStartYear);
-  if (endSlider) endSlider.value = String(currentTimelineEndYear);
-
-  refreshTimelineSelection(animate);
-  syncTimelineModeControls();
 }
 
-function syncTimelineModeControls() {
-  let singleButton = document.getElementById("singleYearModeButton");
-  let rangeButton = document.getElementById("rangeModeButton");
-  let singleControls = document.getElementById("singleYearControls");
-  let rangeControls = document.getElementById("rangeYearControls");
-
-  if (singleButton) singleButton.classList.toggle("Active", timelineMode === "single");
-  if (rangeButton) rangeButton.classList.toggle("Active", timelineMode === "range");
-  if (singleControls) singleControls.hidden = timelineMode !== "single";
-  if (rangeControls) rangeControls.hidden = timelineMode !== "range";
-
-  window.requestAnimationFrame(updateSliderValueLabels);
+function zoomRange(factor) {
+  let span = visibleEndYear - visibleStartYear + 1;
+  let newSpan = Math.round(span * factor);
+  newSpan = Math.max(3, Math.min(maxYear - minYear + 1, newSpan));
+  let center = selectedYear && selectedYear >= visibleStartYear && selectedYear <= visibleEndYear
+    ? selectedYear
+    : (visibleStartYear + visibleEndYear) / 2;
+  let start = Math.round(center - (newSpan - 1) / 2);
+  let end = start + newSpan - 1;
+  if (start < minYear) { end += minYear - start; start = minYear; }
+  if (end > maxYear) { start -= end - maxYear; end = maxYear; }
+  visibleStartYear = Math.max(minYear, start);
+  visibleEndYear = Math.min(maxYear, end);
+  syncRangeControls();
+  redraw();
 }
 
-function setTimelineMode(mode) {
-  if (mode !== "single" && mode !== "range") return;
-
-  if (mode === "single") {
-    let fallbackYear = currentTimelineYear;
-    if (!Number.isFinite(Number(fallbackYear))) {
-      fallbackYear = currentTimelineStartYear;
-    }
-    updateTimelineYear(Number(fallbackYear), true);
-  } else {
-    let start = Number(currentTimelineStartYear);
-    let end = Number(currentTimelineEndYear);
-
-    if (!Number.isFinite(start)) start = Number(currentTimelineYear);
-    if (!Number.isFinite(end)) end = Math.min(start + 5, timelineMaxYear);
-    if (start === end && end < timelineMaxYear) end += 1;
-
-    updateTimelineRange(start, end, true, "end");
-  }
-
-  syncTimelineModeControls();
-}
-
-function bindTimelineControls() {
-  let slider = document.getElementById("yearSlider");
-  let rangeStart = document.getElementById("rangeStartSlider");
-  let rangeEnd = document.getElementById("rangeEndSlider");
-  let singleButton = document.getElementById("singleYearModeButton");
-  let rangeButton = document.getElementById("rangeModeButton");
-
-  if (singleButton) {
-    singleButton.addEventListener("click", function() {
-      setTimelineMode("single");
-    });
-  }
-
-  if (rangeButton) {
-    rangeButton.addEventListener("click", function() {
-      setTimelineMode("range");
-    });
-  }
-
-  if (slider) {
-    slider.addEventListener("input", function() {
-      updateTimelineYear(Number(slider.value), true);
-      syncTimelineModeControls();
-    });
-  }
-
-  if (rangeStart && rangeEnd) {
-    rangeStart.addEventListener("input", function() {
-      updateTimelineRange(
-        Number(rangeStart.value),
-        Number(rangeEnd.value),
-        true,
-        "start"
-      );
-      syncTimelineModeControls();
-    });
-
-    rangeEnd.addEventListener("input", function() {
-      updateTimelineRange(
-        Number(rangeStart.value),
-        Number(rangeEnd.value),
-        true,
-        "end"
-      );
-      syncTimelineModeControls();
-    });
-  }
-
-  syncTimelineModeControls();
-}
-
-function getLinkTargetNode(link) {
-  let targetIndex =
-    link.target && link.target.index !== undefined
-      ? link.target.index
-      : link.target;
-
-  return nodes[targetIndex];
-}
-
-function distancePointToSegment(px, py, x1, y1, x2, y2) {
-  let dx = x2 - x1;
-  let dy = y2 - y1;
-
-  if (dx === 0 && dy === 0) {
-    dx = px - x1;
-    dy = py - y1;
-    return Math.sqrt(dx * dx + dy * dy);
-  }
-
-  let t =
-    ((px - x1) * dx + (py - y1) * dy) /
-    (dx * dx + dy * dy);
-
-  t = Math.max(0, Math.min(1, t));
-
-  let x = x1 + t * dx;
-  let y = y1 + t * dy;
-  let ox = px - x;
-  let oy = py - y;
-
-  return Math.sqrt(ox * ox + oy * oy);
-}
-
-function rectanglesOverlap(a, b, padding) {
-  padding = padding || 0;
-
-  return !(
-    a.x + a.width + padding < b.x ||
-    b.x + b.width + padding < a.x ||
-    a.y + a.height + padding < b.y ||
-    b.y + b.height + padding < a.y
-  );
-}
-
-function boxIntersectsNode(box, node, padding) {
-  padding = padding || 0;
-
-  let closestX = Math.max(
-    box.x,
-    Math.min(node.x, box.x + box.width)
-  );
-
-  let closestY = Math.max(
-    box.y,
-    Math.min(node.y, box.y + box.height)
-  );
-
-  let dx = node.x - closestX;
-  let dy = node.y - closestY;
-  let radius = node.Radius + padding;
-
-  return dx * dx + dy * dy < radius * radius;
-}
-
-function boxIntersectsSegment(box, segment, padding) {
-  padding = padding || 0;
-
-  let cx = box.x + box.width / 2;
-  let cy = box.y + box.height / 2;
-  let radius =
-    Math.sqrt(
-      box.width * box.width +
-      box.height * box.height
-    ) / 2 + padding;
-
-  return distancePointToSegment(
-    cx,
-    cy,
-    segment.x1,
-    segment.y1,
-    segment.x2,
-    segment.y2
-  ) < radius;
-}
-
-function correspondenceSegmentForNode(node) {
-  let dx = node.x - CENTER_X;
-  let dy = node.y - CENTER_Y;
-  let distance = Math.sqrt(dx * dx + dy * dy);
-
-  if (!Number.isFinite(distance) || distance < 1) {
-    return null;
-  }
-
-  let ux = dx / distance;
-  let uy = dy / distance;
-
-  return {
-    x1: CENTER_X + ux * (nodes[0].Radius + 5),
-    y1: CENTER_Y + uy * (nodes[0].Radius + 5),
-    x2: node.x - ux * (node.Radius + 5),
-    y2: node.y - uy * (node.Radius + 5)
-  };
-}
-
-function findSafeCountLabelPosition(
-  node,
-  count,
-  ownSegment,
-  activeSegments,
-  placedBoxes
-) {
-  let text = String(count);
-  let width = Math.max(24, 14 + text.length * 8);
-  let height = 20;
-
-  let dx = ownSegment.x2 - ownSegment.x1;
-  let dy = ownSegment.y2 - ownSegment.y1;
-  let length = Math.sqrt(dx * dx + dy * dy);
-
-  if (!length) return null;
-
-  let ux = dx / length;
-  let uy = dy / length;
-  let px = -uy;
-  let py = ux;
-
-  // Try several positions along the line and on both sides of it.
-  let alongValues = [0.72, 0.62, 0.80, 0.52, 0.88, 0.42];
-  let sideOffsets = [18, -18, 28, -28, 38, -38, 0];
-
-  for (let a = 0; a < alongValues.length; a++) {
-    for (let s = 0; s < sideOffsets.length; s++) {
-      let t = alongValues[a];
-      let offset = sideOffsets[s];
-
-      let cx =
-        ownSegment.x1 +
-        dx * t +
-        px * offset;
-
-      let cy =
-        ownSegment.y1 +
-        dy * t +
-        py * offset;
-
-      let box = {
-        x: cx - width / 2,
-        y: cy - height / 2,
-        width: width,
-        height: height,
-        cx: cx,
-        cy: cy
-      };
-
-      let hitsNode = nodes.some(function(other) {
-        if (!nodePassesFilters(other)) return false;
-        return boxIntersectsNode(box, other, 5);
-      });
-
-      if (hitsNode) continue;
-
-      let hitsPlacedBox = placedBoxes.some(function(otherBox) {
-        return rectanglesOverlap(box, otherBox, 5);
-      });
-
-      if (hitsPlacedBox) continue;
-
-      let hitsOtherLine = activeSegments.some(function(segment) {
-        if (segment.nodeIndex === node.index) return false;
-        return boxIntersectsSegment(box, segment, 4);
-      });
-
-      if (hitsOtherLine) continue;
-
-      return box;
-    }
-  }
-
-  return null;
-}
-
-function updateCorrespondenceCountLabels(activeSegments) {
-  if (!networkCountLabelSelection) return;
-
-  let placedBoxes = [];
-
-  networkCountLabelSelection.each(function(link) {
-    let group = d3.select(this);
-    let node = getLinkTargetNode(link);
-
-    if (
-      !shouldShowCorrespondenceLines() ||
-      !node ||
-      node.AnnualLetterCount <= 0 ||
-      !nodePassesFilters(node)
-    ) {
-      group.style("display", "none");
-      return;
-    }
-
-    let ownSegment = activeSegments.find(function(segment) {
-      return segment.nodeIndex === node.index;
-    });
-
-    if (!ownSegment) {
-      group.style("display", "none");
-      return;
-    }
-
-    let box = findSafeCountLabelPosition(
-      node,
-      node.AnnualLetterCount,
-      ownSegment,
-      activeSegments,
-      placedBoxes
-    );
-
-    // If no collision-free location is available, suppress the box rather
-    // than placing it over a portrait, another label, or another line.
-    if (!box) {
-      group.style("display", "none");
-      return;
-    }
-
-    placedBoxes.push(box);
-
-    group
-      .style("display", null)
-      .attr(
-        "transform",
-        "translate(" + box.cx + "," + box.cy + ")"
-      );
-
-    group
-      .select("rect")
-      .attr("x", -box.width / 2)
-      .attr("y", -box.height / 2)
-      .attr("width", box.width)
-      .attr("height", box.height);
-
-    group
-      .select("text")
-      .text(node.AnnualLetterCount)
-      .attr("x", 0)
-      .attr("y", 0.5);
-  });
-}
-
-function updateNetworkGeometry() {
-  if (!networkLinkSelection || !nodeGroupSelection) return;
-
-  // Maintain a true visual separation:
-  // 1+ letters = inside the boundary
-  // 0 letters = outside the boundary
-  nodes.slice(1).forEach(function(node) {
-    let dx = node.x - CENTER_X;
-    let dy = node.y - CENTER_Y;
-    let distance = Math.sqrt(dx * dx + dy * dy);
-
-    if (!Number.isFinite(distance) || distance === 0) {
-      let angle = node.index * 2.399963229728653;
-      dx = Math.cos(angle);
-      dy = Math.sin(angle);
-      distance = 1;
-    }
-
-    if (node.AnnualLetterCount > 0 && distance > 382) {
-      let scale = 382 / distance;
-      node.x = CENTER_X + dx * scale;
-      node.y = CENTER_Y + dy * scale;
-      node.vx *= 0.25;
-      node.vy *= 0.25;
-    }
-
-    if (node.AnnualLetterCount === 0 && distance < 425) {
-      let scale = 425 / distance;
-      node.x = CENTER_X + dx * scale;
-      node.y = CENTER_Y + dy * scale;
-      node.vx *= 0.25;
-      node.vy *= 0.25;
-    }
-  });
-
-  let activeSegments = [];
-
-  networkLinkSelection.each(function(link) {
-    let path = d3.select(this);
-    let node = getLinkTargetNode(link);
-
-    if (
-      !shouldShowCorrespondenceLines() ||
-      !node ||
-      node.AnnualLetterCount <= 0 ||
-      !nodePassesFilters(node)
-    ) {
-      path
-        .classed("ActiveCorrespondenceLine", false)
-        .style("display", "none")
-        .style("stroke-width", null)
-        .attr("d", null);
-      return;
-    }
-
-    let segment = correspondenceSegmentForNode(node);
-
-    if (!segment) {
-      path.style("display", "none").attr("d", null);
-      return;
-    }
-
-    segment.nodeIndex = node.index;
-    activeSegments.push(segment);
-
-    path
-      .classed("ActiveCorrespondenceLine", true)
-      .style("display", null)
-      .style("stroke-width", correspondenceLineWidth(node.AnnualLetterCount) + "px")
-      .attr(
-        "d",
-        "M " +
-          segment.x1 +
-          " " +
-          segment.y1 +
-          " L " +
-          segment.x2 +
-          " " +
-          segment.y2
-      );
-  });
-
-  nodeGroupSelection.attr("transform", function(d) {
-    return "translate(" + d.x + "," + d.y + ")";
-  });
-
-  networkNodeSelection.attr("cx", 0).attr("cy", 0);
-
-  // Line width now communicates correspondence volume; numeric boxes stay hidden.
-}
-function initialViewTransform() {
-  // Network is now centered in the SVG coordinate system. A very small
-  // initial scale gives the outer ring breathing room inside the frame.
-  let scale = 1.08;
-  return d3.zoomIdentity
-    .translate(WIDTH / 2, HEIGHT / 2)
-    .scale(scale)
-    .translate(-CENTER_X, -CENTER_Y);
-}
-
-function applyInitialView(duration) {
-  if (!zoomBehavior) return;
-
-  let selection = duration
-    ? svg.transition().duration(duration)
-    : svg;
-
-  selection.call(zoomBehavior.transform, initialViewTransform());
-}
-
-// -----------------------------------------------------------------------------
-// Network drawing
-// -----------------------------------------------------------------------------
-
-function drawNetwork() {
-  drawZoomBackground();
-
-  networkLinkSelection = linkLayer
-    .selectAll("path")
-    .data(links)
-    .enter()
-    .append("path")
-    .attr("class", "RelationshipLine CorrespondenceYearLine")
-    .attr("fill", "none");
-
-  networkCountLabelSelection = countLabelLayer
-    .selectAll("g.CorrespondenceCountLabel")
-    .data(links)
-    .enter()
-    .append("g")
-    .attr("class", "CorrespondenceCountLabel")
-    .style("display", "none")
-    .style("pointer-events", "none");
-
-  networkCountLabelSelection
-    .append("rect")
-    .attr("class", "CorrespondenceCountBox")
-    .attr("rx", 5)
-    .attr("ry", 5);
-
-  networkCountLabelSelection
-    .append("text")
-    .attr("class", "CorrespondenceCountText")
-    .attr("text-anchor", "middle")
-    .attr("dominant-baseline", "central");
-
-  nodeGroupSelection = nodeLayer
-    .selectAll("g.PersonNode")
-    .data(nodes)
-    .enter()
-    .append("g")
-    .attr("class", function(d) {
-      return d.index === 0 ? "PersonNode GeorgeEliotNode" : "PersonNode";
-    })
-    .attr("id", function(d) {
-      return d["nodeId"];
-    });
-networkNodeSelection = nodeGroupSelection
-    .append("circle")
-    .attr("class", function(d) {
-      let genderClass =
-        d.GenderNormalized === "female"
-          ? " GenderFemale"
-          : d.GenderNormalized === "male"
-            ? " GenderMale"
-            : " GenderUnknown";
-      return "RelationshipNode" + genderClass;
-    })
-    .attr("r", function(d) { return d.Radius; })
-    .attr("fill", function(d) {
-      if (d.index === 0 || d.HasImage) return "url(#" + d.ImagePath + ")";
-      return "#f7f1e7";
-    })
-    .attr("stroke", function(d) {
-      return d.index === 0
-        ? genderColor("female")
-        : genderColor(d.GenderNormalized);
-    })
-    .attr("stroke-width", function(d) {
-      return d.index === 0 ? 2 : 1.15;
-    });
-
-  nodeGroupSelection
-    .filter(function(d) { return d.index !== 0 && !d.HasImage; })
-    .append("text")
-    .attr("class", "NodeInitials")
-    .attr("text-anchor", "middle")
-    .attr("dy", "0.35em")
-    .text(function(d) {
-      let parts = String(d["FullName"] || "")
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean);
-
-      if (!parts.length) return "?";
-
-      let first = parts[0];
-      let last = parts.length > 1 ? parts[parts.length - 1] : "";
-
-      return (
-        (first.charAt(0) || "") +
-        (last.charAt(0) || "")
-      ).toUpperCase();
-    });
-
-  nodeGroupSelection
-    .append("circle")
-    .attr("class", "NodeHitArea")
-    .attr("r", function(d) { return d.Radius + 7; })
-    .attr("fill", "transparent")
-    .attr("stroke", "none")
-    .style("pointer-events", "all")
-    .style("cursor", function(d) {
-      return d.index === 0 ? "default" : "pointer";
-    })
-    .on("mouseenter", function(d) {
-      if (!d || d.index === 0) return;
-      selectNode(d3.select(this.parentNode).select(".RelationshipNode"), d);
-    })
-    .on("mouseleave", function(d) {
-      if (!d || d.index === 0) return;
-      deselectNode(d3.select(this.parentNode).select(".RelationshipNode"), d);
-    })
-    .on("mousedown", function() {
-      if (d3.event) d3.event.stopPropagation();
-    })
-    .on("click", function(d) {
-      if (d3.event) {
-        d3.event.preventDefault();
-        d3.event.stopPropagation();
-      }
-
-      if (!d) return;
-
-      if (d.index === 0) {
-        returnToNetworkView();
-        return;
-      }
-
-      selectPerson(d, true);
-    });
-
-  updateNetworkGeometry();
-  startTimelineSimulation();
-
-  zoomBehavior = d3
-    .zoom()
-    .scaleExtent([0.6, 2.6])
-    .on("zoom", function() {
-      zoomLayer.attr("transform", d3.event.transform);
-    });
-
-  svg.call(zoomBehavior).on("dblclick.zoom", null);
-  applyInitialView(0);
-
-  svg.on("click.background", function() {
-    if (d3.event.target === svg.node()) {
-      clearDisplay(true);
-      applyFocusSelectedState();
-      showExploreSidebar();
-      applyInitialView(350);
-    }
-  });
-
-  applyFilters();
-}
-
-
-function showExploreSidebar() {
-  let explore = document.getElementById("ExplorePanel");
-  let person = document.getElementById("PersonPanel");
-  let sidebar = document.querySelector(".SidebarColumn");
-
-  if (explore) explore.hidden = false;
-  if (person) person.hidden = true;
-  if (sidebar) sidebar.scrollTop = 0;
-}
-
-function showPersonSidebar() {
-  let explore = document.getElementById("ExplorePanel");
-  let person = document.getElementById("PersonPanel");
-  let sidebar = document.querySelector(".SidebarColumn");
-
-  if (explore) explore.hidden = true;
-  if (person) person.hidden = false;
-  if (sidebar) sidebar.scrollTop = 0;
-}
-
-function returnToNetworkView() {
-  resetNetworkSelection();
-  showExploreSidebar();
-  refreshTimelineSummary();
-}
-
-// -----------------------------------------------------------------------------
-// Detail panel
-// -----------------------------------------------------------------------------
-
-function showSummaryForData(data) {
-  if (!data || data.index === 0) return;
-
-  let biography = document.getElementById("Biography");
-  biography.style.display = "block";
-  biography.style.borderTopColor = genderColor(data.GenderNormalized);
-
-  document.getElementById("CloseButton").style.display = "block";
-  document.getElementById("BiographyName").textContent = data["FullName"] || "";
-
-  document.getElementById("BirthAndDeath").textContent =
-    getBirthDeathDates(data["Birth"], data["Death"]);
-
-  let relationship = document.getElementById("BiographyRelationship");
-  relationship.textContent = capitalizeWords(data.Relationship || "friend");
-  relationship.style.borderColor = genderColor(data.GenderNormalized);
-
-  let summary = document.getElementById("BiographySummary");
-  summary.innerHTML = handleBiographyText(data["Biography"]);
-
-  let photo = document.getElementById("BiographyPhoto");
-  if (data.Image) {
-    photo.src = data.Image;
-    photo.style.display = "block";
-  } else {
-    photo.src = "";
-    photo.style.display = "none";
-  }
-
-  renderRelatedLetterBrowser(data);
-}
-
-function selectPerson(data, shouldFocus) {
-  if (!data || data.index === 0) return;
-
-  showPersonSidebar();
-  window.selectedPersonIndex = data.index;
-  setSelectedPerson(data);
-  showSummaryForData(data);
-  applyFocusSelectedState();
-
-  let biography = document.getElementById("Biography");
-  if (biography) {
-    biography.classList.add("BiographyActive");
-  }
-
-  if (shouldFocus) {
-    window.setTimeout(function() {
-      focusOnPerson(data);
-    }, 40);
-  }
-
-  document.getElementById("NetworkStatus").textContent =
-    "Selected " + data.FullName;
-}
-
-function applyFocusSelectedState() {
-  let selectedIndex = window.selectedPersonIndex;
-
-  d3.selectAll(".PersonNode")
-    .classed("FocusDimmed", function(d) {
-      return (
-        focusSelectedEnabled &&
-        selectedIndex &&
-        d.index !== 0 &&
-        d.index !== selectedIndex
-      );
-    });
-
-  d3.selectAll(".RelationshipLine")
-    .classed("FocusDimmedLine", function(d) {
-      let targetIndex = d.target.index !== undefined ? d.target.index : d.target;
-      return (
-        focusSelectedEnabled &&
-        selectedIndex &&
-        targetIndex !== selectedIndex
-      );
+function buildPeopleBrowseSelect() {
+  let select = document.getElementById("peopleBrowseSelect");
+  if (!select) return;
+
+  select.innerHTML = "";
+  let placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Select a person…";
+  select.appendChild(placeholder);
+
+  people
+    .slice()
+    .sort(function(a, b) { return a.FullName.localeCompare(b.FullName); })
+    .forEach(function(person) {
+      let option = document.createElement("option");
+      option.value = String(person.index);
+      option.textContent = person.FullName;
+      select.appendChild(option);
     });
 }
 
-// -----------------------------------------------------------------------------
-// Search
-// -----------------------------------------------------------------------------
-
-function populateSearchList() {
-  // Search uses live results now.
-}
-
-function renderPeopleSearch() {
+function renderSearchResults() {
   let input = document.getElementById("searchBar");
   let results = document.getElementById("searchResults");
-  if (!input || !results) return;
-
   let term = input.value.trim().toLowerCase();
-
-  if (!term) {
-    results.hidden = true;
-    results.innerHTML = "";
-    return;
-  }
-
-  let matches = people
-    .filter(function(person) {
-      return person.name.toLowerCase().includes(term);
-    })
-    .slice(0, 8);
-
   results.innerHTML = "";
-
+  if (!term) { results.hidden = true; return; }
+  let matches = people.filter(function(p) { return p.SearchText.includes(term); }).slice(0, 8);
   if (!matches.length) {
     let empty = document.createElement("div");
     empty.className = "SearchEmpty";
     empty.textContent = "No matching people";
     results.appendChild(empty);
-    results.hidden = false;
-    return;
-  }
-
-  matches.forEach(function(person) {
-    let button = document.createElement("button");
-    button.type = "button";
-    button.className = "SearchResult";
-
-    let name = document.createElement("span");
-    name.className = "SearchResultName";
-    name.textContent = person.name;
-
-    let relationship = document.createElement("span");
-    relationship.className = "SearchResultType";
-    relationship.textContent = person.data.Relationship
-      ? capitalizeWords(person.data.Relationship)
-      : "Other";
-
-    button.appendChild(name);
-    button.appendChild(relationship);
-
-    button.addEventListener("click", function() {
-      input.value = person.name;
-      results.hidden = true;
-      selectPerson(person.data, true);
+  } else {
+    matches.forEach(function(person) {
+      let button = document.createElement("button");
+      button.type = "button";
+      button.className = "SearchResult";
+      button.innerHTML = '<span class="SearchResultName"></span><span class="SearchResultType"></span>';
+      button.querySelector(".SearchResultName").textContent = person.FullName;
+      button.querySelector(".SearchResultType").textContent = capitalizeWords(person.Relationship);
+      button.addEventListener("click", function() {
+        input.value = person.FullName;
+        let browse = document.getElementById("peopleBrowseSelect");
+        if (browse) browse.value = String(person.index);
+        results.hidden = true;
+        fitRangeToCurrentPopulation();
+        redraw();
+      });
+      results.appendChild(button);
     });
-
-    results.appendChild(button);
-  });
-
+  }
   results.hidden = false;
 }
 
-function findPerson() {
-  let searchTerm = document
-    .getElementById("searchBar")
-    .value
-    .trim()
-    .toLowerCase();
+function redraw() {
+  if (!people.length) return;
+  if (window.innerWidth <= 760) chartMarginLeft = 118; else chartMarginLeft = 190;
+  headerHeight = window.innerWidth <= 760 ? 135 : 160;
+  barBottom = headerHeight - 42;
 
-  if (!searchTerm) return;
+  let rows = visiblePeople();
+  let years = yearsInWindow();
+  let counts = annualUniqueCounts(rows);
 
-  let exact = people.find(function(person) {
-    return person.name.toLowerCase() === searchTerm;
-  });
+  syncRangeControls();
 
-  let partial = people.find(function(person) {
-    return person.name.toLowerCase().includes(searchTerm);
-  });
-
-  let match = exact || partial;
-
-  if (!match) {
-    document.getElementById("NetworkStatus").textContent =
-      "No matching person found";
-    return;
-  }
-
-  selectPerson(match.data, true);
-}
-
-function focusOnPerson(data) {
-  if (!zoomBehavior || !data) return;
-
-  // Use the SVG's own centered coordinate system so selection lands in the
-  // true middle of the visible graph, regardless of sidebar widths.
-  let scale = 1.55;
-  let transform = d3.zoomIdentity
-    .translate(WIDTH / 2, HEIGHT / 2)
-    .scale(scale)
-    .translate(-data.x, -data.y);
-
-  svg
-    .transition()
-    .duration(500)
-    .ease(d3.easeCubicOut)
-    .call(zoomBehavior.transform, transform);
-}
-
-function resetNetworkSelection() {
-  document.getElementById("searchBar").value = "";
-  clearDisplay(true);
-
-  d3.selectAll(".PersonNode").classed("FocusDimmed", false);
-  d3.selectAll(".RelationshipLine").classed("FocusDimmedLine", false);
-
-  if (zoomBehavior) {
-    svg
-      .transition()
-      .duration(450)
-      .call(zoomBehavior.transform, initialViewTransform());
-  }
-
-  document.getElementById("NetworkStatus").textContent =
-    (nodes.length - 1) + " people loaded";
-}
-
-// -----------------------------------------------------------------------------
-// Filters
-// -----------------------------------------------------------------------------
-
-function uniqueRelationships() {
-  let values = {};
-
-  nodes.slice(1).forEach(function(node) {
-    let key = String(node.Relationship || "other").trim().toLowerCase();
-    values[key] = true;
-  });
-
-  return Object.keys(values).sort();
-}
-
-function buildRelationshipFilters() {
-  relationshipValues = ["family", "friend"];
-  enabledRelationships = new Set(relationshipValues);
-
-  let container = document.getElementById("relationshipFilters");
-  let legend = document.getElementById("legendItems");
-
-  container.innerHTML = "";
-  if (legend) legend.innerHTML = "";
-
-  relationshipValues.forEach(function(value) {
-    let label = document.createElement("label");
-    label.className = "RelationshipPill";
-
-    let checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.value = value;
-    checkbox.checked = true;
-
-    let text = document.createElement("span");
-    text.textContent = capitalizeWords(value);
-
-    checkbox.addEventListener("change", function() {
-      if (checkbox.checked) {
-        enabledRelationships.add(value);
-      } else {
-        enabledRelationships.delete(value);
-      }
-      applyFilters();
-    });
-
-    label.appendChild(checkbox);
-    label.appendChild(text);
-    container.appendChild(label);
-  });
-
-  if (legend) {
-    [
-      { label: "Female", color: genderColor("female") },
-      { label: "Male", color: genderColor("male") }
-    ].forEach(function(entry) {
-      let item = document.createElement("span");
-      item.className = "LegendItem";
-
-      let dot = document.createElement("span");
-      dot.className = "LegendDot GenderLegendDot";
-      dot.style.backgroundColor = "transparent";
-      dot.style.borderColor = entry.color;
-
-      let legendText = document.createElement("span");
-      legendText.textContent = entry.label;
-
-      item.appendChild(dot);
-      item.appendChild(legendText);
-      legend.appendChild(item);
-    });
+  let totalRangeLetters = Object.keys(counts).reduce(function(sum, year) { return sum + counts[year]; }, 0);
+  let backYears = document.getElementById("backToYearsButton");
+  if (drillYear !== null) {
+    document.getElementById("MatrixSummary").textContent = rows.length + " people visible · monthly detail for " + drillYear + " · UNK letters kept separately";
+    if (backYears) backYears.hidden = false;
+    drawMonthBars(rows, drillYear);
+    drawMonthMatrix(rows, drillYear);
+  } else {
+    document.getElementById("MatrixSummary").textContent = rows.length + " people visible · " + totalRangeLetters + " unique To/From letters across " + visibleStartYear + "–" + visibleEndYear;
+    if (backYears) backYears.hidden = true;
+    drawBars(rows, years, counts);
+    drawMatrix(rows, years);
   }
 }
 
-
-
-function buildGenderFilters() {
-  enabledGenders = new Set(genderValues);
-
-  let container = document.getElementById("genderFilters");
-  if (!container) return;
-
-  container.innerHTML = "";
-
-  genderValues.forEach(function(value) {
-    let label = document.createElement("label");
-    label.className = "RelationshipPill GenderPill";
-
-    let checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.value = value;
-    checkbox.checked = true;
-
-    let text = document.createElement("span");
-    text.textContent = capitalizeWords(value);
-
-    let pillColor = genderColor(value);
-    let pillBackground = value === "female" ? "#f7e5ed" : "#e6edf6";
-    label.style.borderColor = pillColor;
-    label.style.backgroundColor = pillBackground;
-    label.style.boxShadow = "inset 0 0 0 1px " + pillColor;
-
-    checkbox.addEventListener("change", function() {
-      if (checkbox.checked) {
-        enabledGenders.add(value);
-        label.style.opacity = "1";
-        label.style.backgroundColor = pillBackground;
-      } else {
-        enabledGenders.delete(value);
-        label.style.opacity = "0.55";
-        label.style.backgroundColor = "transparent";
-      }
-
-      applyFilters();
-    });
-
-    label.appendChild(checkbox);
-    label.appendChild(text);
-    container.appendChild(label);
-  });
+function chartWidth(element) {
+  return Math.max(520, element.clientWidth || 900);
 }
 
-
-function nodePassesFilters(node) {
-  if (node.index === 0) return true;
-
-  let relationship = normalizeRelationship(node.Relationship);
-  if (!enabledRelationships.has(relationship)) return false;
-
-  if (!enabledGenders.has(node.GenderNormalized)) return false;
-
-  return true;
+function makeXScale(width) {
+  return d3.scaleLinear().domain([visibleStartYear - 0.5, visibleEndYear + 0.5]).range([chartMarginLeft, width - chartMarginRight]);
 }
 
-function applyFilters() {
-  if (!networkNodeSelection || !networkLinkSelection) return;
+function yearLabelsForWidth(years, x, width) {
+  if (!years.length) return [];
+  let minGap = width <= 700 ? 38 : 46;
+  let candidates = [];
+  let lastX = -Infinity;
 
-  d3.selectAll(".PersonNode").classed("FilteredOut", function(d) {
-    return !nodePassesFilters(d);
-  });
-
-  networkLinkSelection.classed("FilteredLine", function(d) {
-    let target = d.target.index !== undefined ? d.target : nodes[d.target];
-    return target ? !nodePassesFilters(target) : false;
-  });
-
-  refreshTimelineSummary();
-
-  applyFocusSelectedState();
-
-  if (timelineSimulation) {
-    rebuildTimelineForces(0.18);
-  }
-}
-
-
-// -----------------------------------------------------------------------------
-// Controls
-// -----------------------------------------------------------------------------
-
-function bindControls() {
-  let searchBar = document.getElementById("searchBar");
-  let searchResults = document.getElementById("searchResults");
-
-  searchBar.addEventListener("input", renderPeopleSearch);
-
-  searchBar.addEventListener("keydown", function(event) {
-    if (event.key === "Enter") {
-      findPerson();
-      searchResults.hidden = true;
-    }
-
-    if (event.key === "Escape") {
-      searchResults.hidden = true;
+  years.forEach(function(year) {
+    let px = x(year);
+    if (!candidates.length || px - lastX >= minGap) {
+      candidates.push(year);
+      lastX = px;
     }
   });
 
-  document.getElementById("clearButton").addEventListener("click", function() {
-    searchBar.value = "";
-    searchResults.hidden = true;
-    resetAll();
-    searchBar.focus();
-  });
-
-  document.getElementById("CloseButton").addEventListener("click", function() {
-    returnToNetworkView();
-  });
-
-  document.getElementById("BackToNetworkButton").addEventListener("click", function() {
-    returnToNetworkView();
-  });
-
-
-  document.getElementById("selectAllFilters").addEventListener("click", function() {
-    enabledRelationships = new Set(relationshipValues);
-    enabledGenders = new Set(genderValues);
-
-    document
-      .querySelectorAll("#relationshipFilters input[type='checkbox'], #genderFilters input[type='checkbox']")
-      .forEach(function(input) {
-        input.checked = true;
-        let label = input.closest("label");
-        if (label) label.style.opacity = "1";
-      });
-
-    applyFilters();
-  });
-
-  document.getElementById("zoomInButton").addEventListener("click", function() {
-    svg.transition().duration(250).call(zoomBehavior.scaleBy, 1.25);
-  });
-
-  document.getElementById("zoomOutButton").addEventListener("click", function() {
-    svg.transition().duration(250).call(zoomBehavior.scaleBy, 0.8);
-  });
-
-
-  document.addEventListener("click", function(event) {
-    if (
-      !event.target.closest(".SearchWrap") &&
-      !event.target.closest(".SearchResults")
-    ) {
-      searchResults.hidden = true;
+  let lastYear = years[years.length - 1];
+  if (candidates[candidates.length - 1] !== lastYear) {
+    let lastPx = x(lastYear);
+    let previous = candidates[candidates.length - 1];
+    if (previous === undefined || lastPx - x(previous) >= minGap) {
+      candidates.push(lastYear);
+    } else if (candidates.length > 1) {
+      // Prefer the true end year over a nearly-adjacent penultimate label.
+      candidates[candidates.length - 1] = lastYear;
     }
+  }
+
+  if (selectedYear !== null && years.indexOf(selectedYear) !== -1 && candidates.indexOf(selectedYear) === -1) {
+    candidates = candidates.filter(function(year) {
+      return Math.abs(x(year) - x(selectedYear)) >= minGap;
+    });
+    candidates.push(selectedYear);
+    candidates.sort(function(a,b) { return a-b; });
+  }
+  return candidates;
+}
+
+function drawBars(rows, years, counts) {
+  let host = document.getElementById("barHeader");
+  host.innerHTML = "";
+  let width = chartWidth(host);
+  let svg = d3.select(host).append("svg").attr("viewBox", "0 0 " + width + " " + headerHeight).attr("preserveAspectRatio", "none");
+  let x = makeXScale(width);
+  let maxCount = d3.max(years, function(y) { return Number(counts[y] || 0); }) || 1;
+  let y = d3.scaleLinear().domain([0, maxCount]).nice().range([barBottom, barTop]);
+  let step = Math.max(2, (width - chartMarginLeft - chartMarginRight) / Math.max(1, visibleEndYear - visibleStartYear + 1));
+  let barWidth = Math.max(1.5, Math.min(18, step * 0.68));
+
+  svg.append("text").attr("class", "AxisTitle").attr("x", 10).attr("y", 18).text("Unique To/From letters per year");
+  svg.append("text").attr("class", "AxisHint").attr("x", 10).attr("y", 34).text("Click a bar to inspect that year by month");
+
+  let barGroups = svg.selectAll("g.YearBarGroup").data(years).enter().append("g").attr("class", "YearBarGroup");
+  barGroups.append("rect")
+    .attr("class", function(year) { return "YearBar" + (year === selectedYear ? " SelectedYear" : ""); })
+    .attr("x", function(year) { return x(year) - barWidth / 2; })
+    .attr("y", function(year) { return y(Number(counts[year] || 0)); })
+    .attr("width", barWidth)
+    .attr("height", function(year) { return Math.max(1, barBottom - y(Number(counts[year] || 0))); });
+
+  barGroups.append("rect")
+    .attr("class", "YearBarHit")
+    .attr("x", function(year) { return x(year) - Math.max(7, step/2); })
+    .attr("y", barTop)
+    .attr("width", function() { return Math.max(14, step); })
+    .attr("height", barBottom - barTop + 25)
+    .on("click", function(year) { selectYear(year); })
+    .on("mousemove", function(year) { showTooltip(d3.event, null, year, Number(counts[year] || 0)); })
+    .on("mouseleave", hideTooltip);
+
+  let labelYears = yearLabelsForWidth(years, x, width);
+  svg.selectAll("text.YearLabel").data(labelYears)
+    .enter().append("text").attr("class", "YearLabel")
+    .attr("x", function(year) { return x(year); }).attr("y", headerHeight - 18)
+    .attr("text-anchor", "middle").text(function(year) { return year; });
+
+  if (selectedYear !== null && selectedYear >= visibleStartYear && selectedYear <= visibleEndYear) {
+    svg.append("line").attr("class", "YearGridLine SelectedYear").attr("x1", x(selectedYear)).attr("x2", x(selectedYear)).attr("y1", barTop).attr("y2", headerHeight);
+  }
+}
+
+function drawMatrix(rows, years) {
+  let host = document.getElementById("matrixBody");
+  host.innerHTML = "";
+  if (!rows.length) {
+    let empty = document.createElement("div"); empty.className = "EmptyRangeMessage"; empty.textContent = "No people match the current filters."; host.appendChild(empty); return;
+  }
+  let width = chartWidth(host.parentElement);
+  let height = Math.max(rows.length * rowHeight, 120);
+  let x = makeXScale(width);
+  let maxDotCount = d3.max(rows, function(person) {
+    return d3.max(years, function(year) { return Number(person.YearCounts[year] || 0); }) || 0;
+  }) || 1;
+  let r = d3.scaleSqrt().domain([1, maxDotCount]).range([3.5, 13]);
+  let svg = d3.select(host).append("svg").attr("viewBox", "0 0 " + width + " " + height).attr("height", height).attr("preserveAspectRatio", "none");
+
+  years.forEach(function(year) {
+    svg.append("line").attr("class", "YearGridLine" + (year === selectedYear ? " SelectedYear" : ""))
+      .attr("x1", x(year)).attr("x2", x(year)).attr("y1", 0).attr("y2", height);
+  });
+
+  let rowGroups = svg.selectAll("g.PersonRow").data(rows).enter().append("g").attr("class", "PersonRow").attr("transform", function(d,i) { return "translate(0," + (i * rowHeight) + ")"; });
+  rowGroups.append("rect").attr("class", function(d,i) { return "RowStripe" + (i % 2 ? " Alternate" : ""); }).attr("x", 0).attr("y", 0).attr("width", width).attr("height", rowHeight);
+  rowGroups.append("line").attr("class", "RowLine").attr("x1", 0).attr("x2", width).attr("y1", rowHeight - .5).attr("y2", rowHeight - .5);
+
+  rowGroups.append("text").attr("class", "PersonName").attr("x", 8).attr("y", 14)
+    .text(function(person) { return person.FullName; })
+    .on("click", function(person) { openPerson(person, null); });
+  rowGroups.append("text").attr("class", "PersonMeta").attr("x", 8).attr("y", 26)
+    .text(function(person) { return capitalizeWords(person.Relationship) + " · " + personRangeCount(person) + " in range"; });
+
+  rowGroups.each(function(person) {
+    let row = d3.select(this);
+    let entries = years.map(function(year) { return { person: person, year: year, count: Number(person.YearCounts[year] || 0) }; }).filter(function(d) { return d.count > 0; });
+    row.selectAll("circle.ActivityDot").data(entries).enter().append("circle")
+      .attr("class", function(d) {
+        let genderClass = d.person.GenderNormalized === "female" ? " GenderFemale" : d.person.GenderNormalized === "male" ? " GenderMale" : "";
+        return "ActivityDot" + genderClass + (selectedPerson && selectedPerson.index === d.person.index && selectedYear === d.year ? " SelectedDot" : "");
+      })
+      .attr("cx", function(d) { return x(d.year); }).attr("cy", rowHeight / 2).attr("r", function(d) { return r(d.count); })
+      .on("click", function(d) { openPerson(d.person, d.year); })
+      .on("mousemove", function(d) { showTooltip(d3.event, d.person, d.year, d.count); })
+      .on("mouseleave", hideTooltip);
   });
 }
 
-function resetAll() {
-  enabledGenders = new Set(genderValues);
-  document
-    .querySelectorAll("#genderFilters input")
-    .forEach(function(checkbox) {
-      checkbox.checked = true;
+
+function monthBuckets() {
+  return [
+    { key: 1, label: "Jan" }, { key: 2, label: "Feb" }, { key: 3, label: "Mar" },
+    { key: 4, label: "Apr" }, { key: 5, label: "May" }, { key: 6, label: "Jun" },
+    { key: 7, label: "Jul" }, { key: 8, label: "Aug" }, { key: 9, label: "Sep" },
+    { key: 10, label: "Oct" }, { key: 11, label: "Nov" }, { key: 12, label: "Dec" },
+    { key: "unknown", label: "UNK" }
+  ];
+}
+
+function uniqueMonthCounts(rows, year) {
+  let result = {};
+  monthBuckets().forEach(function(m) { result[m.key] = {}; });
+  rows.forEach(function(person) {
+    getCorrespondenceLetters(person).forEach(function(letter) {
+      if (Number(letter.year) !== Number(year)) return;
+      let key = letter.month || "unknown";
+      let unique = letter.url || [person.index, letter.relationType, letter.title].join("|");
+      result[key][unique] = true;
     });
-  showExploreSidebar();
-  document.getElementById("searchBar").value = "";
+  });
+  let counts = {};
+  Object.keys(result).forEach(function(k) { counts[k] = Object.keys(result[k]).length; });
+  return counts;
+}
 
-  focusSelectedEnabled = false;
+function makeMonthXScale(width) {
+  return d3.scalePoint().domain(monthBuckets().map(function(m) { return String(m.key); })).range([chartMarginLeft + 8, width - chartMarginRight - 8]).padding(0.35);
+}
 
-  enabledRelationships = new Set(relationshipValues);
+function monthLabelsForWidth(buckets, x, width) {
+  if (!buckets.length) return [];
 
-  document
-    .querySelectorAll("#relationshipFilters input[type='checkbox']")
-    .forEach(function(input) {
-      input.checked = true;
-    });
+  // Keep labels readable as the chart narrows. All labels are short (Jan…Dec, UNK),
+  // but we still thin them when the actual pixel spacing becomes too tight.
+  let minimumGap = width <= 620 ? 27 : 23;
+  let labels = [];
+  let lastX = -Infinity;
 
-  clearDisplay(true);
-  d3.selectAll(".PersonNode").classed("FocusDimmed", false);
-  d3.selectAll(".RelationshipLine").classed("FocusDimmedLine", false);
-  applyFilters();
+  buckets.forEach(function(bucket) {
+    let px = x(String(bucket.key));
+    if (!labels.length || px - lastX >= minimumGap) {
+      labels.push(bucket);
+      lastX = px;
+    }
+  });
 
-  svg
-    .transition()
-    .duration(450)
-    .call(zoomBehavior.transform, initialViewTransform());
+  // Always show UNK at the far right. If necessary, drop the previous label
+  // rather than allowing the two labels to collide.
+  let unknown = buckets[buckets.length - 1];
+  if (labels.indexOf(unknown) === -1) {
+    while (labels.length && x(String(unknown.key)) - x(String(labels[labels.length - 1].key)) < minimumGap) {
+      labels.pop();
+    }
+    labels.push(unknown);
+  }
+
+  return labels;
+}
+
+function drawMonthBars(rows, year) {
+  let host = document.getElementById("barHeader");
+  host.innerHTML = "";
+  let width = chartWidth(host);
+  let svg = d3.select(host).append("svg").attr("viewBox", "0 0 " + width + " " + headerHeight).attr("preserveAspectRatio", "none");
+  let buckets = monthBuckets();
+  let counts = uniqueMonthCounts(rows, year);
+  let x = makeMonthXScale(width);
+  let maxCount = d3.max(buckets, function(m) { return counts[m.key] || 0; }) || 1;
+  let y = d3.scaleLinear().domain([0, maxCount]).nice().range([barBottom, barTop]);
+  let step = (width - chartMarginLeft - chartMarginRight) / buckets.length;
+  let barWidth = Math.max(8, Math.min(34, step * 0.55));
+  svg.append("text").attr("class", "AxisTitle").attr("x", 10).attr("y", 18).text("" + year + " correspondence by month");
+  svg.append("text").attr("class", "AxisHint").attr("x", 10).attr("y", 34).text("UNK = year is known, but no reliable month is stated");
+  let g = svg.selectAll("g.MonthBarGroup").data(buckets).enter().append("g");
+  g.append("rect").attr("class", function(m){ return "YearBar" + (String(selectedMonth) === String(m.key) ? " SelectedYear" : ""); })
+    .attr("x", function(m){ return x(String(m.key)) - barWidth/2; }).attr("y", function(m){ return y(counts[m.key] || 0); })
+    .attr("width", barWidth).attr("height", function(m){ return Math.max(1, barBottom - y(counts[m.key] || 0)); });
+  g.append("rect").attr("class","YearBarHit").attr("x", function(m){ return x(String(m.key)) - Math.max(12, step/2); })
+    .attr("y", barTop).attr("width", Math.max(24, step)).attr("height", barBottom-barTop+25)
+    .on("click", function(m){ selectedMonth = m.key; window.currentTimelineYear = year; window.currentTimelineMonth = m.key; redraw(); })
+    .on("mousemove", function(m){ showTooltip(d3.event, null, m.label + " " + year, counts[m.key] || 0); }).on("mouseleave", hideTooltip);
+  let labelBuckets = monthLabelsForWidth(buckets, x, width);
+  svg.selectAll("text.YearLabel").data(labelBuckets).enter().append("text").attr("class","YearLabel")
+    .attr("x", function(m){ return x(String(m.key)); }).attr("y", headerHeight-18).attr("text-anchor","middle").text(function(m){ return m.label; });
+}
+
+function drawMonthMatrix(rows, year) {
+  let host = document.getElementById("matrixBody"); host.innerHTML = "";
+  if (!rows.length) { let empty=document.createElement("div"); empty.className="EmptyRangeMessage"; empty.textContent="No people match the current filters."; host.appendChild(empty); return; }
+  let width = chartWidth(host.parentElement), height=Math.max(rows.length*rowHeight,120), x=makeMonthXScale(width), buckets=monthBuckets();
+  let maxDotCount = d3.max(rows, function(person){ return d3.max(buckets, function(m){ return Number((person.MonthCounts[year]||{})[m.key]||0); })||0; })||1;
+  let r=d3.scaleSqrt().domain([1,maxDotCount]).range([3.5,13]);
+  let svg=d3.select(host).append("svg").attr("viewBox","0 0 "+width+" "+height).attr("height",height).attr("preserveAspectRatio","none");
+  buckets.forEach(function(m){ svg.append("line").attr("class","YearGridLine"+(String(selectedMonth)===String(m.key)?" SelectedYear":""))
+    .attr("x1",x(String(m.key))).attr("x2",x(String(m.key))).attr("y1",0).attr("y2",height); });
+  let rowGroups=svg.selectAll("g.PersonRow").data(rows).enter().append("g").attr("class","PersonRow").attr("transform",function(d,i){return "translate(0,"+(i*rowHeight)+")";});
+  rowGroups.append("rect").attr("class",function(d,i){return "RowStripe"+(i%2?" Alternate":"");}).attr("x",0).attr("y",0).attr("width",width).attr("height",rowHeight);
+  rowGroups.append("line").attr("class","RowLine").attr("x1",0).attr("x2",width).attr("y1",rowHeight-.5).attr("y2",rowHeight-.5);
+  rowGroups.append("text").attr("class","PersonName").attr("x",8).attr("y",14).text(function(p){return p.FullName;}).on("click",function(p){openPerson(p,year,null);});
+  rowGroups.append("text").attr("class","PersonMeta").attr("x",8).attr("y",26).text(function(p){return capitalizeWords(p.Relationship)+" · "+Number(p.YearCounts[year]||0)+" in "+year;});
+  rowGroups.each(function(person){ let row=d3.select(this); let entries=buckets.map(function(m){return {person:person, month:m.key, label:m.label, count:Number((person.MonthCounts[year]||{})[m.key]||0)};}).filter(function(d){return d.count>0;});
+    row.selectAll("circle.ActivityDot").data(entries).enter().append("circle").attr("class",function(d){let gc=d.person.GenderNormalized==="female"?" GenderFemale":d.person.GenderNormalized==="male"?" GenderMale":""; return "ActivityDot"+gc+(selectedPerson&&selectedPerson.index===d.person.index&&String(selectedMonth)===String(d.month)?" SelectedDot":"");})
+      .attr("cx",function(d){return x(String(d.month));}).attr("cy",rowHeight/2).attr("r",function(d){return r(d.count);})
+      .on("click",function(d){selectedMonth=d.month; openPerson(d.person,year,d.month);}).on("mousemove",function(d){showTooltip(d3.event,d.person,d.label+" "+year,d.count);}).on("mouseleave",hideTooltip); });
+}
+
+function selectYear(year) {
+  selectedYear = year;
+  drillYear = year;
+  selectedMonth = null;
+  window.currentTimelineYear = year;
+  window.currentTimelineRange = null;
+  window.currentTimelineMonth = null;
+  redraw();
+}
+
+function openPerson(person, year, month) {
+  selectedPerson = person;
+  let hasSelectedYear =
+    year !== null &&
+    year !== undefined &&
+    year !== "" &&
+    Number.isFinite(Number(year)) &&
+    Number(year) >= 1700;
+
+  if (hasSelectedYear) {
+    selectedYear = Number(year);
+    window.currentTimelineYear = selectedYear;
+    window.currentTimelineRange = null;
+    window.currentTimelineMonth = month || null;
+  } else {
+    window.currentTimelineYear = null;
+    window.currentTimelineRange = { start: visibleStartYear, end: visibleEndYear };
+  }
+
+  document.getElementById("ExplorePanel").hidden = true;
+  document.getElementById("PersonPanel").hidden = false;
+  document.getElementById("BiographyName").textContent = person.FullName;
+  document.getElementById("BirthAndDeath").textContent = getBirthDeathDates(person.Birth, person.Death);
+  document.getElementById("BiographyRelationship").textContent = capitalizeWords(person.Relationship);
+  document.getElementById("BiographySummary").innerHTML = handleBiographyText(person.Biography);
+  let photo = document.getElementById("BiographyPhoto");
+  if (person.Image) { photo.src = person.Image; photo.style.display = "block"; } else { photo.src = ""; photo.style.display = "none"; }
+  renderRelatedLetterBrowser(person);
+  openSidebar();
+  redraw();
+}
+
+function showExplorePanel() {
+  document.getElementById("ExplorePanel").hidden = false;
+  document.getElementById("PersonPanel").hidden = true;
+}
+
+function openSidebar() {
+  document.body.classList.remove("SidebarClosed");
+  document.getElementById("sidebarBackdrop").hidden = window.innerWidth > 760;
+  let button = document.getElementById("openSidebarButton");
+  if (button) button.setAttribute("aria-expanded", "true");
+}
+function closeSidebar() {
+  document.body.classList.add("SidebarClosed");
+  document.getElementById("sidebarBackdrop").hidden = true;
+  let button = document.getElementById("openSidebarButton");
+  if (button) button.setAttribute("aria-expanded", "false");
+}
+
+function syncSidebarForViewport() {
+  // Phones start graph-first. Desktop starts with the control rail open unless
+  // the user has explicitly closed it during this session.
+  if (window.innerWidth <= 760 && !document.body.dataset.sidebarInitialized) {
+    document.body.classList.add("SidebarClosed");
+  }
+  document.body.dataset.sidebarInitialized = "true";
+  let backdrop = document.getElementById("sidebarBackdrop");
+  if (backdrop) backdrop.hidden = document.body.classList.contains("SidebarClosed") || window.innerWidth > 760;
+}
+
+function showTooltip(event, person, year, count) {
+  let tooltip = document.getElementById("matrixTooltip");
+  tooltip.hidden = false;
+  tooltip.innerHTML = person
+    ? "<strong>" + escapeHtml(person.FullName) + "</strong>" + year + " · " + count + (count === 1 ? " letter" : " letters") + "<br>Click to view the linked letters."
+    : "<strong>" + year + "</strong>" + count + (count === 1 ? " unique letter" : " unique letters") + " among visible people.";
+  let left = Math.min(window.innerWidth - 270, event.clientX + 14);
+  let top = Math.min(window.innerHeight - 100, event.clientY + 14);
+  tooltip.style.left = Math.max(8, left) + "px";
+  tooltip.style.top = Math.max(8, top) + "px";
+}
+function hideTooltip() { document.getElementById("matrixTooltip").hidden = true; }
+function escapeHtml(value) {
+  return String(value || "").replace(/[&<>"']/g, function(ch) { return ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[ch]; });
 }
