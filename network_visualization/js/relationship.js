@@ -422,14 +422,14 @@ let parseData = d3.csv("../Datasets/UpdatedGeorgeEliotGallery.csv", function(row
   node["Biography"] = row["Dublin Core:Description"] || "";
   node["Image"] = firstGalleryImage(row["file"]);
 
-  let closeness = parseInt(row["Closeness"], 10);
+  let closeness = parseInt(row["Dublin Core:Subject"], 10);
   if (!Number.isFinite(closeness) || closeness < 0) closeness = 15;
 
   node.RawCloseness = closeness;
   node.Closeness = closeness;
   node.Radius = Math.max(13, Math.min(19, 20 - closeness * 0.30));
 
-  node.Relationship = normalizeRelationship(row["Relationship"]);
+  node.Relationship = normalizeRelationship(row["Dublin Core:Format"]);
 
   // Use only gender explicitly stored in Dublin Core:Type.
   node.GenderNormalized = normalizeGender({
