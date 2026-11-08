@@ -241,7 +241,7 @@ Promise.all([
       Death: dates.death,
       Biography: row["Dublin Core:Description"] || "",
       Image: firstGalleryImage(row["file"]),
-      Relationship: normalizeRelationship(row["Relationship"]),
+      Relationship: normalizeRelationship(row["Dublin Core: Format"]),
       GenderNormalized: normalizeGender(row["Dublin Core:Type"]),
       SearchText: aliasSearchText(row, fullName),
       YearCounts: {},
